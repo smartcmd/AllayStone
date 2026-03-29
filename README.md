@@ -8,18 +8,17 @@ A python plugin loader and runtime for AllayMC using GraalPython, inspired by En
 ./gradlew shadowJar
 ```
 
-This produces `build/libs/AllayStone-0.1.0-shaded.jar`.
+This produces `build/libs/AllayStone-<version>-shaded.jar`.
 
 ## Install
 
 1. Copy the shaded jar into the Allay server `plugins/` directory.
 2. Start the server.
 
-AllayStone manages a Python prefix at `plugins/.local` and loads Python plugins from the distributions installed there.
+AllayStone manages a Python prefix at `plugins/.local`.
 
-Wheel files copied into `plugins/*.whl` are installed into `plugins/.local` automatically during startup.
-
-Editable installs are also supported if they target the same prefix:
+- Wheel files copied into `plugins/*.whl` are installed into `plugins/.local` automatically during startup.
+- Editable installs are also supported:
 
 ```powershell
 python -m pip install -e <plugin-project> --prefix <server>/plugins/.local
@@ -27,13 +26,12 @@ python -m pip install -e <plugin-project> --prefix <server>/plugins/.local
 
 For `./gradlew runServer`, the managed prefix is `build/run/plugins/.local`.
 
-## Removing Plugins
+## Remove Plugin
 
 Stop the server before removing a Python plugin.
 
-For wheel installs, delete the matching `.whl` file from `plugins/`. AllayStone will remove the installed files from `plugins/.local` the next time the server starts.
-
-For editable installs, uninstall the distribution from the managed prefix. In PowerShell:
+- Wheel install: delete the matching `.whl` file from `plugins/`. AllayStone will remove the installed files from `plugins/.local` on the next startup.
+- Editable install: uninstall from the managed prefix.
 
 ```powershell
 & { $env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"; try { python -m pip uninstall allaystone-<plugin-name> } finally { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } }
@@ -43,15 +41,13 @@ For `./gradlew runServer`, replace `<server>/plugins/.local` with `build/run/plu
 
 ## Python Plugin Format
 
-Python plugins are regular Python distributions. In practice, you can either build a wheel or install the project in editable mode.
+Python plugins are regular Python distributions.
 
-Requirements:
+- Distribution name: `allaystone-<plugin-name>`
+- Exactly one `[project.entry-points.allaystone]` entry
+- Entry point class must inherit from `allaystone.Plugin`
 
-- The distribution name must match `allaystone-<plugin-name>`.
-- The distribution must define exactly one `[project.entry-points.allaystone]` entry.
-- The entry point class must inherit from `allaystone.Plugin`.
-
-The Python base class exposes:
+`allaystone.Plugin` exposes:
 
 - metadata fields such as `version`, `api_version`, `description`, `authors`, `website`, `depend`, and `soft_depend`
 - lifecycle methods `on_load`, `on_enable`, and `on_disable`
@@ -59,65 +55,52 @@ The Python base class exposes:
 
 ## Reloading
 
-Python plugins are reloadable through Allay's built-in plugin command:
-
 ```text
 /plugin reload <name>
 /plugin reloadall
 ```
 
-When a Python plugin reloads, AllayStone will:
+Reloading does this:
 
 1. call the current instance's `on_disable()`
 2. rebuild the plugin's GraalPy context
 3. create a new Python plugin instance
 4. call `on_load()` and `on_enable()` on the new instance
 
-Wheel plugins are reinstalled from `plugins/*.whl` before the new context is created.
+- Wheel plugins are reinstalled from `plugins/*.whl` before the new context is created.
+- Editable plugins are reloaded from the current source tree already linked into `plugins/.local`.
+- Metadata changes such as `name`, `version`, `api_version`, and dependencies still require a full restart.
+- Plugin cleanup is still the plugin author's responsibility. Unregister listeners, commands, and long-lived tasks in `on_disable()`.
 
-Editable plugins are reloaded from the current source tree already linked into `plugins/.local`.
+## Plugin Template
 
-This only reloads Python code. Changes to plugin descriptor metadata such as `name`, `version`, `api_version`, and dependencies still require a full server restart because Allay does not recreate the plugin container during `/plugin reload`.
+Use the template repository to start a new Python plugin:
 
-Reload cleanup is still the plugin author's responsibility. If a plugin registers listeners, commands, or long-lived tasks, it should unregister or stop them inside `on_disable()` before the new instance starts.
+https://github.com/smartcmd/AllayStoneTemplate
 
-## Example Plugin
-
-A minimal example plugin is included in [examples/hello-python-plugin/README.md](examples/hello-python-plugin/README.md).
-
-If you want a standalone starter repository, use `https://github.com/smartcmd/AllayStoneTemplate`.
-
-Build it with:
+Typical workflow:
 
 ```powershell
-cd examples/hello-python-plugin
+git clone https://github.com/smartcmd/AllayStoneTemplate.git
+cd AllayStoneTemplate
 python -m pip wheel . --no-deps --wheel-dir dist
 ```
 
-Then either:
-
-1. copy the generated wheel from `examples/hello-python-plugin/dist/` into the server `plugins/` directory, or
-2. install the example in editable mode with `python -m pip install -e . --prefix <server>/plugins/.local`
-
-To remove the example editable install later:
+- Wheel: copy `dist/*.whl` into the server `plugins/` directory.
+- Editable:
 
 ```powershell
-& { $env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"; try { python -m pip uninstall allaystone-hello } finally { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } }
+python -m pip install -e . --prefix <server>/plugins/.local
 ```
-
-## Local Test
-
-```powershell
-./gradlew runServer
-```
-
-With the example installed, the server should load plugin `hello` and create `plugins/hello/hello.txt`.
 
 ## Python Stubs
 
-AllayStone also generates and bundles `allay.api` Python stubs plus the `allaystone` helper package used by Python plugins.
+AllayStone also generates and bundles:
 
-Build the local stub package with:
+- `allay.api` Python stubs
+- the `allaystone` helper package used by Python plugins
+
+Build the local stub package:
 
 ```powershell
 ./gradlew preparePythonStubPackage
@@ -125,10 +108,10 @@ cd build/generated/python-stub-package
 python -m pip install -e .
 ```
 
-GitHub Releases also publish a wheel for the generated stubs. Install it directly with:
+GitHub Releases also publish a wheel for the generated stubs:
 
 ```powershell
 python -m pip install https://github.com/smartcmd/AllayStone/releases/download/<tag>/<wheel-file>.whl
 ```
 
-The wheel is intended for editor support and GraalPy interop. In normal CPython, importing `allay.api.*` at runtime will fail because the generated package uses GraalPy `java.type()` bindings.
+This wheel is for editor support and GraalPy interop. In normal CPython, importing `allay.api.*` at runtime will fail because the generated package uses GraalPy `java.type()` bindings.
