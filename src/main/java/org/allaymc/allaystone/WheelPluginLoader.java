@@ -34,6 +34,7 @@ final class WheelPluginLoader implements PluginLoader {
     private static final Logger LOGGER = LoggerFactory.getLogger(WheelPluginLoader.class);
     private static final java.nio.file.PathMatcher WHEEL_MATCHER =
             FileSystems.getDefault().getPathMatcher("glob:**.whl");
+    private static final String RUNTIME_PLUGIN_NAME = "AllayStone";
 
     private static final String IMPORT_PLUGIN_CLASS = """
             import importlib
@@ -142,9 +143,12 @@ final class WheelPluginLoader implements PluginLoader {
         var website = readString(pluginClass.getMember("website"), distributionMetadata.website());
         var dependencies = new ArrayList<PluginDependency>();
         readDependencyNames(pluginClass.getMember("depend"))
-                .forEach(name -> dependencies.add(new PluginDependency(normalizeName(name), null, false)));
+                .forEach(name -> dependencies.add(new PluginDependency(normalizeDependencyName(name), null, false)));
         readDependencyNames(pluginClass.getMember("soft_depend"))
-                .forEach(name -> dependencies.add(new PluginDependency(normalizeName(name), null, true)));
+                .forEach(name -> dependencies.add(new PluginDependency(normalizeDependencyName(name), null, true)));
+        if (dependencies.stream().noneMatch(dependency -> dependency.name().equalsIgnoreCase(RUNTIME_PLUGIN_NAME))) {
+            dependencies.add(new PluginDependency(RUNTIME_PLUGIN_NAME, null, false));
+        }
 
         return new PythonPluginDescriptor(
                 pluginName,
@@ -416,6 +420,11 @@ final class WheelPluginLoader implements PluginLoader {
             throw new PluginException("Plugin names must not be blank.");
         }
         return normalized;
+    }
+
+    private static String normalizeDependencyName(String value) {
+        var normalized = normalizeName(value);
+        return normalized.equals(normalizeName(RUNTIME_PLUGIN_NAME)) ? RUNTIME_PLUGIN_NAME : normalized;
     }
 
     static final class Factory implements PluginLoader.Factory {

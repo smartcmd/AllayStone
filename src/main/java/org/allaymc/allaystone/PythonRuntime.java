@@ -5,18 +5,21 @@ import org.graalvm.polyglot.Engine;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 final class PythonRuntime implements AutoCloseable {
+    private static final String RESOURCE_LIST_PATH = "python/resource-list.txt";
     private static final String[] HELPER_RESOURCES = {
             "python/src/allaystone/__init__.py",
             "python/src/allaystone/plugin.py"
@@ -95,7 +98,7 @@ final class PythonRuntime implements AutoCloseable {
     }
 
     private void copyHelperPackage() throws IOException {
-        for (var resourcePath : HELPER_RESOURCES) {
+        for (var resourcePath : listHelperResources()) {
             var relativePath = Path.of(resourcePath.replaceFirst("^python/src/", ""));
             var destination = helperSourceRoot.resolve(relativePath);
             Files.createDirectories(Objects.requireNonNull(destination.getParent()));
@@ -105,6 +108,19 @@ final class PythonRuntime implements AutoCloseable {
                 }
                 Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
             }
+        }
+    }
+
+    private static List<String> listHelperResources() throws IOException {
+        try (InputStream in = PythonRuntime.class.getClassLoader().getResourceAsStream(RESOURCE_LIST_PATH)) {
+            if (in == null) {
+                return List.of(HELPER_RESOURCES);
+            }
+
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).lines()
+                    .map(String::trim)
+                    .filter(line -> !line.isEmpty())
+                    .toList();
         }
     }
 

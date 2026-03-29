@@ -1,15 +1,19 @@
+import org.graalvm.python.pyinterfacegen.J2PyiTask
 import org.allaymc.gradle.plugin.tasks.RunServerTask
+import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import java.util.jar.JarFile
 
 plugins {
     id("java-library")
     id("org.allaymc.gradle.plugin") version "0.2.1"
+    id("org.graalvm.python.pyinterfacegen")
     id("com.gradleup.shadow") version "9.4.1"
 }
 
 group = "org.allaymc.allaystone"
 description = "A python plugin loader & runtime for AllayMC using GraalPython, inspired by Endstone"
 version = "0.1.0"
+val allayApiVersion = "0.27.0"
 
 java {
     toolchain {
@@ -18,7 +22,7 @@ java {
 }
 
 allay {
-    api = "0.27.0"
+    api = allayApiVersion
 
     plugin {
         entrance = ".AllayStone"
@@ -38,6 +42,78 @@ dependencies {
 
     compileOnly(group = "org.projectlombok", name = "lombok", version = "1.18.34")
     annotationProcessor(group = "org.projectlombok", name = "lombok", version = "1.18.34")
+}
+
+val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
+val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
+val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
+val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
+val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
+
+sourceSets {
+    main {
+        resources.srcDir(generatedResourcesDir)
+    }
+}
+
+val verifyAllaySubmodule = tasks.register("verifyAllaySubmodule") {
+    doLast {
+        require(allayApiSourceDir.asFile.isDirectory) {
+            "Allay submodule is missing. Run `git submodule update --init --recursive`."
+        }
+    }
+}
+
+val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPythonStubs") {
+    dependsOn(verifyAllaySubmodule)
+    source = fileTree(allayApiSourceDir) {
+        include("org/allaymc/api/**/*.java")
+    }
+    classpath = configurations.compileClasspath.get()
+    setDestinationDir(allayApiStubModuleDir.get().asFile)
+    packageMap.set("org.allaymc.api=allay.api")
+    moduleName.set("allay-api")
+    moduleVersion.set(allayApiVersion)
+
+    (options as StandardJavadocDocletOptions).apply {
+        encoding = "UTF-8"
+    }
+}
+
+val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") {
+    dependsOn(generateAllayApiPythonStubs)
+    from(allayApiStubModuleDir) {
+        include("allay/**")
+    }
+    into(generatedPythonSourceDir)
+}
+
+val generatePythonResourceList = tasks.register("generatePythonResourceList") {
+    dependsOn(syncGeneratedPythonStubs)
+    inputs.dir("src/main/resources/python/src")
+    inputs.dir(generatedPythonSourceDir)
+    outputs.file(pythonResourceListFile)
+
+    doLast {
+        val outputFile = pythonResourceListFile.get().asFile
+        val entries = sequenceOf(
+            project.file("src/main/resources/python/src"),
+            generatedPythonSourceDir.get().asFile
+        )
+            .filter { it.isDirectory }
+            .flatMap { root ->
+                root.walkTopDown()
+                    .filter { it.isFile }
+                    .map { file -> "python/src/${file.relativeTo(root).invariantSeparatorsPath}" }
+                    .asSequence()
+            }
+            .distinct()
+            .sorted()
+            .toList()
+
+        outputFile.parentFile.mkdirs()
+        outputFile.writeText(entries.joinToString(System.lineSeparator(), postfix = System.lineSeparator()))
+    }
 }
 
 val mergedServiceFilesDir = layout.buildDirectory.dir("generated/merged-service-files")
@@ -87,6 +163,10 @@ val mergeRuntimeServiceFiles = tasks.register("mergeRuntimeServiceFiles") {
             )
         }
     }
+}
+
+tasks.named("processResources") {
+    dependsOn(generatePythonResourceList)
 }
 
 tasks.shadowJar {

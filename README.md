@@ -54,3 +54,23 @@ Then copy the generated wheel from `examples/hello-python-plugin/dist/` into the
 ```
 
 With the example wheel installed, the server should load plugin `hello` and create `plugins/hello/hello.txt`.
+
+## Python Stubs
+
+AllayStone also generates and bundles `allay.api` Python stubs for GraalPy plugin development.
+
+Build the local stub package with:
+
+```powershell
+./gradlew generateAllayApiPythonStubs
+cd build/generated/allay-api-stubs
+python -m pip install -e .
+```
+
+GitHub Releases also publish a wheel for the generated stubs. Install it directly with:
+
+```powershell
+python -m pip install https://github.com/smartcmd/AllayStone/releases/download/<tag>/<wheel-file>.whl
+```
+
+The wheel is intended for editor support and GraalPy interop. In normal CPython, importing `allay.api.*` at runtime will fail because the generated package uses GraalPy `java.type()` bindings.
