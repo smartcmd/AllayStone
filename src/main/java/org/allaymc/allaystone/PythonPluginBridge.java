@@ -4,55 +4,123 @@ import org.allaymc.api.plugin.Plugin;
 import org.allaymc.api.plugin.PluginContainer;
 import org.allaymc.api.plugin.PluginException;
 import org.allaymc.api.server.Server;
-import org.graalvm.polyglot.Value;
-
-import java.util.concurrent.atomic.AtomicBoolean;
 
 final class PythonPluginBridge extends Plugin {
-    private final PythonRuntime.PythonContextHandle context;
-    private final Value pythonPlugin;
-    private final AtomicBoolean closed = new AtomicBoolean();
+    private final WheelPluginLoader loader;
+    private final Object lifecycleLock = new Object();
+    private WheelPluginLoader.LoadedPythonPlugin loadedPlugin;
 
-    PythonPluginBridge(PythonRuntime.PythonContextHandle context, Value pythonPlugin) {
-        this.context = context;
-        this.pythonPlugin = pythonPlugin;
+    PythonPluginBridge(WheelPluginLoader loader, WheelPluginLoader.LoadedPythonPlugin loadedPlugin) {
+        this.loader = loader;
+        this.loadedPlugin = loadedPlugin;
     }
 
     @Override
     public void onLoad() {
-        invokeLifecycle("on_load", false);
+        synchronized (lifecycleLock) {
+            invokeLifecycle(requireLoadedPlugin(), "on_load", false);
+        }
     }
 
     @Override
     public void onEnable() {
-        invokeLifecycle("on_enable", false);
+        synchronized (lifecycleLock) {
+            invokeLifecycle(requireLoadedPlugin(), "on_enable", false);
+        }
     }
 
     @Override
     public void onDisable() {
-        try {
-            invokeLifecycle("on_disable", true);
-        } finally {
-            closeContext();
+        synchronized (lifecycleLock) {
+            var loadedPlugin = this.loadedPlugin;
+            if (loadedPlugin == null) {
+                return;
+            }
+
+            try {
+                invokeLifecycle(loadedPlugin, "on_disable", true);
+            } finally {
+                closePlugin(loadedPlugin);
+                this.loadedPlugin = null;
+            }
+        }
+    }
+
+    @Override
+    public boolean isReloadable() {
+        return true;
+    }
+
+    @Override
+    public void reload() {
+        synchronized (lifecycleLock) {
+            var previous = requireLoadedPlugin();
+            invokeLifecycle(previous, "on_disable", true);
+
+            WheelPluginLoader.LoadedPythonPlugin reloaded = null;
+            try {
+                reloaded = loader.reloadPlugin();
+                injectRuntimeBindings(reloaded);
+                invokeLifecycle(reloaded, "on_load", false);
+                invokeLifecycle(reloaded, "on_enable", false);
+                loadedPlugin = reloaded;
+                closePlugin(previous);
+            } catch (RuntimeException e) {
+                closePlugin(reloaded);
+                try {
+                    invokeLifecycle(previous, "on_enable", false);
+                    loadedPlugin = previous;
+                } catch (RuntimeException resumeError) {
+                    closePlugin(previous);
+                    loadedPlugin = null;
+                    e.addSuppressed(resumeError);
+                }
+                throw e;
+            }
         }
     }
 
     @Override
     public void setPluginContainer(PluginContainer pluginContainer) {
         super.setPluginContainer(pluginContainer);
-        context.run(ignored -> {
-            pythonPlugin.putMember("server", Server.getInstance());
-            pythonPlugin.putMember("logger", getPluginLogger());
-            pythonPlugin.putMember("data_folder", pluginContainer.dataFolder().toAbsolutePath().toString());
-            pythonPlugin.putMember("name", pluginContainer.descriptor().getName());
-            pythonPlugin.putMember("java_plugin", this);
+        synchronized (lifecycleLock) {
+            var loadedPlugin = this.loadedPlugin;
+            if (loadedPlugin != null) {
+                injectRuntimeBindings(loadedPlugin);
+            }
+        }
+    }
+
+    private WheelPluginLoader.LoadedPythonPlugin requireLoadedPlugin() {
+        if (loadedPlugin == null) {
+            throw new IllegalStateException("The Python plugin context is not available.");
+        }
+        return loadedPlugin;
+    }
+
+    private void injectRuntimeBindings(WheelPluginLoader.LoadedPythonPlugin loadedPlugin) {
+        var pluginContainer = getPluginContainer();
+        if (pluginContainer == null) {
+            return;
+        }
+
+        loadedPlugin.context().run(ignored -> {
+            loadedPlugin.pythonPlugin().putMember("server", Server.getInstance());
+            loadedPlugin.pythonPlugin().putMember("logger", getPluginLogger());
+            loadedPlugin.pythonPlugin().putMember("data_folder", pluginContainer.dataFolder().toAbsolutePath().toString());
+            loadedPlugin.pythonPlugin().putMember("name", pluginContainer.descriptor().getName());
+            loadedPlugin.pythonPlugin().putMember("java_plugin", this);
         });
     }
 
-    private void invokeLifecycle(String methodName, boolean keepOpenOnFailure) {
+    private void invokeLifecycle(
+            WheelPluginLoader.LoadedPythonPlugin loadedPlugin,
+            String methodName,
+            boolean keepOpenOnFailure
+    ) {
         try {
-            context.run(ignored -> {
-                var method = pythonPlugin.getMember(methodName);
+            loadedPlugin.context().run(ignored -> {
+                var method = loadedPlugin.pythonPlugin().getMember(methodName);
                 if (method == null || !method.canExecute()) {
                     throw new PluginException("Python plugin is missing callable lifecycle method " + methodName + ".");
                 }
@@ -60,15 +128,15 @@ final class PythonPluginBridge extends Plugin {
             });
         } catch (RuntimeException e) {
             if (!keepOpenOnFailure) {
-                closeContext();
+                closePlugin(loadedPlugin);
             }
             throw e;
         }
     }
 
-    private void closeContext() {
-        if (closed.compareAndSet(false, true)) {
-            context.close();
+    private static void closePlugin(WheelPluginLoader.LoadedPythonPlugin loadedPlugin) {
+        if (loadedPlugin != null) {
+            loadedPlugin.close();
         }
     }
 }

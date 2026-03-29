@@ -73,25 +73,21 @@ final class WheelPluginLoader implements PluginLoader {
     }
 
     @Override
-    public PluginDescriptor loadDescriptor() {
+    public synchronized PluginDescriptor loadDescriptor() {
         if (descriptor != null) {
             return descriptor;
         }
 
-        try (var zipFile = new ZipFile(pluginPath.toFile())) {
-            distributionMetadata = readDistributionMetadata(zipFile);
-            entryPoint = readEntryPoint(zipFile, distributionMetadata.distributionName());
-            installRoot = extractWheel(zipFile, distributionMetadata);
-        } catch (IOException e) {
-            throw new PluginException("Unable to inspect Python wheel " + pluginPath.getFileName() + ".", e);
-        }
-
-        try (var context = runtime.createContext(installRoot)) {
-            var pluginClass = loadPluginClass(context);
-            descriptor = buildDescriptor(pluginClass);
+        var wheel = inspectWheel();
+        try (var context = runtime.createContext(wheel.installRoot())) {
+            var pluginClass = loadPluginClass(context, wheel.entryPoint());
+            descriptor = buildDescriptor(pluginClass, wheel.distributionMetadata(), wheel.entryPoint());
             if (descriptor.getAPIVersion().isBlank()) {
                 LOGGER.warn("Python plugin {} does not declare api_version.", descriptor.getName());
             }
+            distributionMetadata = wheel.distributionMetadata();
+            entryPoint = wheel.entryPoint();
+            installRoot = wheel.installRoot();
             return descriptor;
         }
     }
@@ -99,28 +95,61 @@ final class WheelPluginLoader implements PluginLoader {
     @Override
     public PluginContainer loadPlugin() {
         var descriptor = (PythonPluginDescriptor) loadDescriptor();
-        var context = runtime.createContext(Objects.requireNonNull(installRoot));
+        var bridge = new PythonPluginBridge(
+                this,
+                createLoadedPlugin(Objects.requireNonNull(entryPoint), Objects.requireNonNull(installRoot))
+        );
+        return createPluginContainer(
+                bridge,
+                descriptor,
+                this,
+                WheelPluginSource.getOrCreateDataFolder(descriptor.getName())
+        );
+    }
+
+    synchronized LoadedPythonPlugin reloadPlugin() {
+        var descriptor = (PythonPluginDescriptor) loadDescriptor();
+        var wheel = inspectWheel();
+        if (!normalizeName(wheel.entryPoint().name()).equals(descriptor.getName())) {
+            throw new PluginException(
+                    "Reloaded Python plugin name " + wheel.entryPoint().name() + " does not match loaded plugin " + descriptor.getName() + "."
+            );
+        }
+
+        distributionMetadata = wheel.distributionMetadata();
+        entryPoint = wheel.entryPoint();
+        installRoot = wheel.installRoot();
+        return createLoadedPlugin(entryPoint, installRoot);
+    }
+
+    private WheelData inspectWheel() {
+        try (var zipFile = new ZipFile(pluginPath.toFile())) {
+            var distributionMetadata = readDistributionMetadata(zipFile);
+            var entryPoint = readEntryPoint(zipFile, distributionMetadata.distributionName());
+            var installRoot = extractWheel(zipFile, distributionMetadata);
+            return new WheelData(distributionMetadata, entryPoint, installRoot);
+        } catch (IOException e) {
+            throw new PluginException("Unable to inspect Python wheel " + pluginPath.getFileName() + ".", e);
+        }
+    }
+
+    private LoadedPythonPlugin createLoadedPlugin(EntryPointSpec entryPoint, Path installRoot) {
+        var context = runtime.createContext(installRoot);
         try {
-            var pluginClass = loadPluginClass(context);
+            var pluginClass = loadPluginClass(context, entryPoint);
             if (!pluginClass.canInstantiate()) {
                 throw new PluginException("Python plugin class " + entryPoint.rawValue() + " is not instantiable.");
             }
 
             var pluginInstance = context.call(ignored -> pluginClass.newInstance());
-            var bridge = new PythonPluginBridge(context, pluginInstance);
-            return createPluginContainer(
-                    bridge,
-                    descriptor,
-                    this,
-                    WheelPluginSource.getOrCreateDataFolder(descriptor.getName())
-            );
+            return new LoadedPythonPlugin(context, pluginInstance);
         } catch (RuntimeException e) {
             context.close();
             throw e;
         }
     }
 
-    private Value loadPluginClass(PythonRuntime.PythonContextHandle context) {
+    private Value loadPluginClass(PythonRuntime.PythonContextHandle context, EntryPointSpec entryPoint) {
         return context.call(polyglot -> {
             var bindings = polyglot.getBindings("python");
             bindings.putMember("__allaystone_module_name", entryPoint.moduleName());
@@ -130,7 +159,11 @@ final class WheelPluginLoader implements PluginLoader {
         });
     }
 
-    private PythonPluginDescriptor buildDescriptor(Value pluginClass) {
+    private PythonPluginDescriptor buildDescriptor(
+            Value pluginClass,
+            DistributionMetadata distributionMetadata,
+            EntryPointSpec entryPoint
+    ) {
         var pluginName = normalizeName(entryPoint.name());
         var version = readString(pluginClass.getMember("version"), distributionMetadata.version());
         if (version.isBlank()) {
@@ -459,6 +492,36 @@ final class WheelPluginLoader implements PluginLoader {
             String rawValue,
             String moduleName,
             String attributePath
+    ) {
+    }
+
+    static final class LoadedPythonPlugin implements AutoCloseable {
+        private final PythonRuntime.PythonContextHandle context;
+        private final Value pythonPlugin;
+
+        private LoadedPythonPlugin(PythonRuntime.PythonContextHandle context, Value pythonPlugin) {
+            this.context = context;
+            this.pythonPlugin = pythonPlugin;
+        }
+
+        PythonRuntime.PythonContextHandle context() {
+            return context;
+        }
+
+        Value pythonPlugin() {
+            return pythonPlugin;
+        }
+
+        @Override
+        public void close() {
+            context.close();
+        }
+    }
+
+    private record WheelData(
+            DistributionMetadata distributionMetadata,
+            EntryPointSpec entryPoint,
+            Path installRoot
     ) {
     }
 

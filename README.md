@@ -34,6 +34,26 @@ The Python base class exposes:
 - lifecycle methods `on_load`, `on_enable`, and `on_disable`
 - runtime fields injected by AllayStone: `server`, `logger`, `data_folder`, `name`, and `java_plugin`
 
+## Reloading
+
+Python wheel plugins are reloadable through Allay's built-in plugin command:
+
+```text
+/plugin reload <name>
+/plugin reloadall
+```
+
+When a Python plugin reloads, AllayStone will:
+
+1. call the current instance's `on_disable()`
+2. rebuild the plugin's GraalPy context from the wheel on disk
+3. create a new Python plugin instance
+4. call `on_load()` and `on_enable()` on the new instance
+
+This only reloads Python code. Changes to plugin descriptor metadata such as `name`, `version`, `api_version`, and dependencies still require a full server restart because Allay does not recreate the plugin container during `/plugin reload`.
+
+Reload cleanup is still the plugin author's responsibility. If a plugin registers listeners, commands, or long-lived tasks, it should unregister or stop them inside `on_disable()` before the new instance starts.
+
 ## Example Plugin
 
 A minimal example plugin is included in [examples/hello-python-plugin/README.md](C:/Users/35232/IdeaProjects/AllayStone/examples/hello-python-plugin/README.md).
