@@ -26,9 +26,7 @@ python -m pip install -e . --prefix <server>/plugins/.local
 Stop the server first, then uninstall the distribution from the same prefix:
 
 ```powershell
-$env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"
-python -m pip uninstall allaystone-hello
-Remove-Item Env:PYTHONPATH
+& { $env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"; try { python -m pip uninstall allaystone-hello } finally { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } }
 ```
 
 ## Install

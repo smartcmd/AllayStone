@@ -36,9 +36,7 @@ For wheel installs, delete the matching `.whl` file from `plugins/`. AllayStone 
 For editable installs, uninstall the distribution from the managed prefix. In PowerShell:
 
 ```powershell
-$env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"
-python -m pip uninstall allaystone-<plugin-name>
-Remove-Item Env:PYTHONPATH
+& { $env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"; try { python -m pip uninstall allaystone-<plugin-name> } finally { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } }
 ```
 
 For `./gradlew runServer`, replace `<server>/plugins/.local` with `build/run/plugins/.local`.
@@ -87,6 +85,8 @@ Reload cleanup is still the plugin author's responsibility. If a plugin register
 
 A minimal example plugin is included in [examples/hello-python-plugin/README.md](examples/hello-python-plugin/README.md).
 
+If you want a standalone starter repository, use `https://github.com/smartcmd/AllayStoneTemplate`.
+
 Build it with:
 
 ```powershell
@@ -102,9 +102,7 @@ Then either:
 To remove the example editable install later:
 
 ```powershell
-$env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"
-python -m pip uninstall allaystone-hello
-Remove-Item Env:PYTHONPATH
+& { $env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"; try { python -m pip uninstall allaystone-hello } finally { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } }
 ```
 
 ## Local Test
