@@ -57,13 +57,13 @@ With the example wheel installed, the server should load plugin `hello` and crea
 
 ## Python Stubs
 
-AllayStone also generates and bundles `allay.api` Python stubs for GraalPy plugin development.
+AllayStone also generates and bundles `allay.api` Python stubs plus the `allaystone` helper package used by Python plugins.
 
 Build the local stub package with:
 
 ```powershell
-./gradlew generateAllayApiPythonStubs
-cd build/generated/allay-api-stubs
+./gradlew preparePythonStubPackage
+cd build/generated/python-stub-package
 python -m pip install -e .
 ```
 

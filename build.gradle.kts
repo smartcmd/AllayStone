@@ -45,9 +45,11 @@ dependencies {
 }
 
 val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
+val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/python/src")
 val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
 val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
 val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
+val pythonStubPackageDir = layout.buildDirectory.dir("generated/python-stub-package")
 val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
 
 sourceSets {
@@ -88,16 +90,46 @@ val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") 
     into(generatedPythonSourceDir)
 }
 
+val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") {
+    dependsOn(generateAllayApiPythonStubs)
+    from(allayApiStubModuleDir) {
+        include("allay/**")
+        include("pyproject.toml")
+    }
+    from(pythonHelperSourceDir) {
+        include("allaystone/**")
+    }
+    into(pythonStubPackageDir)
+
+    doLast {
+        val pyprojectFile = pythonStubPackageDir.get().file("pyproject.toml").asFile
+        val original = pyprojectFile.readText()
+        val packagesLine = Regex("""packages = \[(.*)]""").find(original)
+            ?: throw GradleException("Unable to patch generated pyproject.toml packages list.")
+        val packages = packagesLine.groupValues[1]
+            .split(',')
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .toMutableList()
+        if (!packages.contains("\"allaystone\"")) {
+            packages += "\"allaystone\""
+        }
+        pyprojectFile.writeText(
+            original.replace(packagesLine.value, "packages = [${packages.joinToString(", ")}]")
+        )
+    }
+}
+
 val generatePythonResourceList = tasks.register("generatePythonResourceList") {
     dependsOn(syncGeneratedPythonStubs)
-    inputs.dir("src/main/resources/python/src")
+    inputs.dir(pythonHelperSourceDir)
     inputs.dir(generatedPythonSourceDir)
     outputs.file(pythonResourceListFile)
 
     doLast {
         val outputFile = pythonResourceListFile.get().asFile
         val entries = sequenceOf(
-            project.file("src/main/resources/python/src"),
+            pythonHelperSourceDir.asFile,
             generatedPythonSourceDir.get().asFile
         )
             .filter { it.isDirectory }

@@ -36,11 +36,11 @@ jobs:
           cache-overwrite-existing: true
           cache-read-only: false
 
-      - name: Generate stubs
-        run: ./gradlew generateAllayApiPythonStubs
+      - name: Prepare stub package
+        run: ./gradlew preparePythonStubPackage
 
       - name: Build wheel
-        working-directory: build/generated/allay-api-stubs
+        working-directory: build/generated/python-stub-package
         run: |
           python -m pip install --upgrade pip build
           python -m build --wheel
@@ -48,4 +48,4 @@ jobs:
       - name: Upload wheel to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" build/generated/allay-api-stubs/dist/*.whl --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" build/generated/python-stub-package/dist/*.whl --clobber
