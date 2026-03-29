@@ -1,6 +1,9 @@
 import org.graalvm.python.pyinterfacegen.J2PyiTask
 import org.allaymc.gradle.plugin.tasks.RunServerTask
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
+import org.gradle.kotlin.dsl.support.serviceOf
+import org.gradle.process.ExecOperations
+import java.io.File
 import java.util.jar.JarFile
 
 plugins {
@@ -58,8 +61,25 @@ val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
 val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
 val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
 val allayApiRuntimeStubModuleDir = layout.buildDirectory.dir("generated/allay-api-runtime-stubs")
+val allayApiFormattedStubModuleDir = layout.buildDirectory.dir("generated/allay-api-formatted-stubs")
 val pythonStubPackageDir = layout.buildDirectory.dir("generated/python-stub-package")
 val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
+val pythonToolDir = layout.buildDirectory.dir("python-tools")
+val ruffInstallDir = pythonToolDir.map { it.dir("ruff") }
+val configuredPythonExecutable = providers.gradleProperty("pythonExecutable")
+    .orElse(providers.environmentVariable("PYTHON"))
+    .orNull
+val defaultPythonCommand = if (System.getProperty("os.name").lowercase().contains("windows")) {
+    listOf("py", "-3")
+} else {
+    listOf("python3")
+}
+fun pythonCommand(vararg args: String): List<String> {
+    val prefix = configuredPythonExecutable?.let(::listOf) ?: defaultPythonCommand
+    return prefix + args
+}
+val ruffVersion = "0.15.8"
+val execOperations = project.serviceOf<ExecOperations>()
 
 sourceSets {
     main {
@@ -181,17 +201,72 @@ generateAllayApiPythonStubs.configure {
     finalizedBy(fixGeneratedAllayApiRuntimeStubs)
 }
 
+val installRuff = tasks.register("installRuff") {
+    inputs.property("pythonCommand", configuredPythonExecutable ?: defaultPythonCommand.joinToString(" "))
+    inputs.property("ruffVersion", ruffVersion)
+    outputs.dir(ruffInstallDir)
+
+    doLast {
+        val outputDir = ruffInstallDir.get().asFile
+        delete(outputDir)
+        outputDir.mkdirs()
+
+        execOperations.exec {
+            commandLine(
+                pythonCommand(
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--quiet",
+                    "--target",
+                    outputDir.absolutePath,
+                    "ruff==$ruffVersion"
+                )
+            )
+        }
+    }
+}
+
+val formatGeneratedAllayApiPythonStubs = tasks.register("formatGeneratedAllayApiPythonStubs") {
+    dependsOn(fixGeneratedAllayApiRuntimeStubs, installRuff)
+    inputs.dir(allayApiRuntimeStubModuleDir)
+    outputs.dir(allayApiFormattedStubModuleDir)
+
+    doLast {
+        val outputDir = allayApiFormattedStubModuleDir.get().asFile
+        delete(outputDir)
+        copy {
+            from(allayApiRuntimeStubModuleDir)
+            into(outputDir)
+        }
+
+        val ruffPath = ruffInstallDir.get().asFile.absolutePath
+        val existingPythonPath = System.getenv("PYTHONPATH")
+        val pythonPath = if (existingPythonPath.isNullOrBlank()) {
+            ruffPath
+        } else {
+            "$ruffPath${File.pathSeparator}$existingPythonPath"
+        }
+
+        execOperations.exec {
+            environment("PYTHONPATH", pythonPath)
+            commandLine(pythonCommand("-m", "ruff", "format", outputDir.absolutePath))
+        }
+    }
+}
+
 val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") {
-    dependsOn(fixGeneratedAllayApiRuntimeStubs)
-    from(allayApiRuntimeStubModuleDir) {
+    dependsOn(formatGeneratedAllayApiPythonStubs)
+    from(allayApiFormattedStubModuleDir) {
         include("allay/**")
     }
     into(generatedPythonSourceDir)
 }
 
 val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") {
-    dependsOn(fixGeneratedAllayApiRuntimeStubs)
-    from(allayApiRuntimeStubModuleDir) {
+    dependsOn(formatGeneratedAllayApiPythonStubs)
+    from(allayApiFormattedStubModuleDir) {
         include("allay/**")
         include("pyproject.toml")
     }
