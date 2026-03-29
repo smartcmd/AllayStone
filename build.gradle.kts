@@ -1,8 +1,8 @@
-import org.graalvm.python.pyinterfacegen.J2PyiTask
 import org.allaymc.gradle.plugin.tasks.RunServerTask
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import org.gradle.kotlin.dsl.support.serviceOf
 import org.gradle.process.ExecOperations
+import org.graalvm.python.pyinterfacegen.J2PyiTask
 import java.io.File
 import java.util.jar.JarFile
 
@@ -16,8 +16,130 @@ plugins {
 group = "org.allaymc.allaystone"
 description = "A python plugin loader & runtime for AllayMC using GraalPython, inspired by Endstone"
 version = "0.1.2-SNAPSHOT"
+
 val allayApiVersion = "0.27.0"
+val graalVersion = "25.0.2"
 val lombokVersion = "1.18.34"
+val ruffVersion = "0.15.8"
+
+val execOperations = project.serviceOf<ExecOperations>()
+val delombok by configurations.creating
+
+val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
+val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/python/src")
+
+val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
+val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
+val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
+
+val allayApiDelombokedSourceDir = layout.buildDirectory.dir("generated/delombok/allay-api")
+val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
+val allayApiRuntimeStubModuleDir = layout.buildDirectory.dir("generated/allay-api-runtime-stubs")
+val allayApiFormattedStubModuleDir = layout.buildDirectory.dir("generated/allay-api-formatted-stubs")
+val pythonStubPackageDir = layout.buildDirectory.dir("generated/python-stub-package")
+
+val pythonToolDir = layout.buildDirectory.dir("python-tools")
+val ruffInstallDir = pythonToolDir.map { it.dir("ruff") }
+
+val configuredPythonExecutable = providers.gradleProperty("pythonExecutable")
+    .orElse(providers.environmentVariable("PYTHON"))
+    .orNull
+val defaultPythonCommand = if (System.getProperty("os.name").lowercase().contains("windows")) {
+    listOf("py", "-3")
+} else {
+    listOf("python3")
+}
+
+fun pythonCommand(vararg args: String): List<String> {
+    val prefix = configuredPythonExecutable?.let(::listOf) ?: defaultPythonCommand
+    return prefix + args
+}
+
+fun prependPythonPath(extraPath: String): String {
+    val existingPythonPath = System.getenv("PYTHONPATH")
+    return if (existingPythonPath.isNullOrBlank()) {
+        extraPath
+    } else {
+        "$extraPath${File.pathSeparator}$existingPythonPath"
+    }
+}
+
+fun collectNestedClassNames(jars: Iterable<File>): Map<String, String> {
+    val nestedClassNames = linkedMapOf<String, String>()
+    jars.filter { it.isFile && it.extension == "jar" }
+        .sortedBy { it.name }
+        .forEach { jarFile ->
+            JarFile(jarFile).use { jar ->
+                val entries = jar.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.isDirectory || !entry.name.startsWith("org/allaymc/api/") || !entry.name.endsWith(".class") || '$' !in entry.name) {
+                        continue
+                    }
+
+                    val binaryName = entry.name.removeSuffix(".class").replace('/', '.')
+                    val nestedSegments = binaryName.substringAfter("org.allaymc.api.").split('$').drop(1)
+                    if (nestedSegments.isEmpty() || nestedSegments.any { segment ->
+                            segment.isEmpty() ||
+                                !Character.isJavaIdentifierStart(segment[0]) ||
+                                segment.any { ch -> !Character.isJavaIdentifierPart(ch) }
+                        }) {
+                        continue
+                    }
+
+                    nestedClassNames.putIfAbsent(binaryName.replace('$', '.'), binaryName)
+                }
+            }
+        }
+    return nestedClassNames
+}
+
+fun patchStubPackagePyproject(pyprojectFile: File) {
+    val original = pyprojectFile.readText()
+    val packagesLine = Regex("""packages = \[(.*)]""").find(original)
+        ?: throw GradleException("Unable to patch generated pyproject.toml packages list.")
+    val packages = packagesLine.groupValues[1]
+        .split(',')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .toMutableList()
+    if (!packages.contains("\"allaystone\"")) {
+        packages += "\"allaystone\""
+    }
+    pyprojectFile.writeText(
+        original.replace(packagesLine.value, "packages = [${packages.joinToString(", ")}]")
+    )
+}
+
+fun mergeServiceDefinitions(jars: Iterable<File>): Map<String, LinkedHashSet<String>> {
+    val merged = linkedMapOf<String, LinkedHashSet<String>>()
+    jars.filter { it.isFile && it.extension == "jar" }
+        .sortedBy { it.name }
+        .forEach { jarFile ->
+            JarFile(jarFile).use { jar ->
+                val entries = jar.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.isDirectory || !entry.name.startsWith("META-INF/services/")) {
+                        continue
+                    }
+
+                    val lines = jar.getInputStream(entry).bufferedReader().useLines { sequence ->
+                        sequence
+                            .map(String::trim)
+                            .filter(String::isNotEmpty)
+                            .toList()
+                    }
+                    if (lines.isEmpty()) {
+                        continue
+                    }
+
+                    merged.getOrPut(entry.name) { linkedSetOf() }.addAll(lines)
+                }
+            }
+        }
+    return merged
+}
 
 java {
     toolchain {
@@ -36,50 +158,18 @@ allay {
 }
 
 dependencies {
-    implementation("org.graalvm.polyglot:polyglot:25.0.2")
-    implementation("org.graalvm.python:python-embedding:25.0.2") {
+    implementation("org.graalvm.polyglot:polyglot:$graalVersion")
+    implementation("org.graalvm.python:python-embedding:$graalVersion") {
         exclude(group = "org.graalvm.python", module = "python")
     }
-    implementation("org.graalvm.python:python-language:25.0.2")
-    implementation("org.graalvm.python:python-resources:25.0.2")
-    implementation("org.graalvm.truffle:truffle-runtime:25.0.2")
+    implementation("org.graalvm.python:python-language:$graalVersion")
+    implementation("org.graalvm.python:python-resources:$graalVersion")
+    implementation("org.graalvm.truffle:truffle-runtime:$graalVersion")
 
     compileOnly("org.projectlombok:lombok:$lombokVersion")
     annotationProcessor("org.projectlombok:lombok:$lombokVersion")
-}
-
-val delombok by configurations.creating
-
-dependencies {
     delombok("org.projectlombok:lombok:$lombokVersion")
 }
-
-val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
-val allayApiDelombokedSourceDir = layout.buildDirectory.dir("generated/delombok/allay-api")
-val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/python/src")
-val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
-val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
-val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
-val allayApiRuntimeStubModuleDir = layout.buildDirectory.dir("generated/allay-api-runtime-stubs")
-val allayApiFormattedStubModuleDir = layout.buildDirectory.dir("generated/allay-api-formatted-stubs")
-val pythonStubPackageDir = layout.buildDirectory.dir("generated/python-stub-package")
-val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
-val pythonToolDir = layout.buildDirectory.dir("python-tools")
-val ruffInstallDir = pythonToolDir.map { it.dir("ruff") }
-val configuredPythonExecutable = providers.gradleProperty("pythonExecutable")
-    .orElse(providers.environmentVariable("PYTHON"))
-    .orNull
-val defaultPythonCommand = if (System.getProperty("os.name").lowercase().contains("windows")) {
-    listOf("py", "-3")
-} else {
-    listOf("python3")
-}
-fun pythonCommand(vararg args: String): List<String> {
-    val prefix = configuredPythonExecutable?.let(::listOf) ?: defaultPythonCommand
-    return prefix + args
-}
-val ruffVersion = "0.15.8"
-val execOperations = project.serviceOf<ExecOperations>()
 
 sourceSets {
     main {
@@ -96,12 +186,12 @@ val verifyAllaySubmodule = tasks.register("verifyAllaySubmodule") {
 }
 
 val delombokAllayApi = tasks.register<JavaExec>("delombokAllayApi") {
+    val outputDir = allayApiDelombokedSourceDir.get().asFile
+
     dependsOn(verifyAllaySubmodule)
     inputs.dir(allayApiSourceDir)
     inputs.files(configurations.compileClasspath)
     outputs.dir(allayApiDelombokedSourceDir)
-
-    val outputDir = allayApiDelombokedSourceDir.get().asFile
 
     classpath(delombok)
     mainClass.set("lombok.launch.Main")
@@ -117,7 +207,7 @@ val delombokAllayApi = tasks.register<JavaExec>("delombokAllayApi") {
     )
 
     doFirst {
-        delete(outputDir)
+        outputDir.deleteRecursively()
         outputDir.mkdirs()
     }
 }
@@ -140,48 +230,19 @@ val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPyt
 }
 
 val fixGeneratedAllayApiRuntimeStubs = tasks.register("fixGeneratedAllayApiRuntimeStubs") {
+    val outputDir = allayApiRuntimeStubModuleDir.get().asFile
+
     dependsOn(generateAllayApiPythonStubs)
     outputs.dir(allayApiRuntimeStubModuleDir)
 
     doLast {
-        val outputDir = allayApiRuntimeStubModuleDir.get().asFile
-        delete(outputDir)
+        outputDir.deleteRecursively()
         copy {
             from(allayApiStubModuleDir)
             into(outputDir)
         }
 
-        val nestedClassNames = linkedMapOf<String, String>()
-        configurations.compileClasspath.get().files
-            .filter { it.isFile && it.extension == "jar" }
-            .sortedBy { it.name }
-            .forEach { jarFile ->
-                JarFile(jarFile).use { jar ->
-                    val entries = jar.entries()
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-                        if (entry.isDirectory || !entry.name.startsWith("org/allaymc/api/") || !entry.name.endsWith(".class") || '$' !in entry.name) {
-                            continue
-                        }
-
-                        val binaryName = entry.name.removeSuffix(".class").replace('/', '.')
-                        val nestedSegments = binaryName
-                            .substringAfter("org.allaymc.api.")
-                            .split('$')
-                            .drop(1)
-                        if (nestedSegments.isEmpty() || nestedSegments.any { segment ->
-                                segment.isEmpty() ||
-                                    !Character.isJavaIdentifierStart(segment[0]) ||
-                                    segment.any { ch -> !Character.isJavaIdentifierPart(ch) }
-                            }) {
-                            continue
-                        }
-
-                        nestedClassNames.putIfAbsent(binaryName.replace('$', '.'), binaryName)
-                    }
-                }
-            }
-
+        val nestedClassNames = collectNestedClassNames(configurations.compileClasspath.get().files)
         fileTree(outputDir) {
             include("**/__init__.py")
         }.forEach { stubFile ->
@@ -202,13 +263,14 @@ generateAllayApiPythonStubs.configure {
 }
 
 val installRuff = tasks.register("installRuff") {
+    val outputDir = ruffInstallDir.get().asFile
+
     inputs.property("pythonCommand", configuredPythonExecutable ?: defaultPythonCommand.joinToString(" "))
     inputs.property("ruffVersion", ruffVersion)
     outputs.dir(ruffInstallDir)
 
     doLast {
-        val outputDir = ruffInstallDir.get().asFile
-        delete(outputDir)
+        outputDir.deleteRecursively()
         outputDir.mkdirs()
 
         execOperations.exec {
@@ -229,28 +291,21 @@ val installRuff = tasks.register("installRuff") {
 }
 
 val formatGeneratedAllayApiPythonStubs = tasks.register("formatGeneratedAllayApiPythonStubs") {
+    val outputDir = allayApiFormattedStubModuleDir.get().asFile
+
     dependsOn(fixGeneratedAllayApiRuntimeStubs, installRuff)
     inputs.dir(allayApiRuntimeStubModuleDir)
     outputs.dir(allayApiFormattedStubModuleDir)
 
     doLast {
-        val outputDir = allayApiFormattedStubModuleDir.get().asFile
-        delete(outputDir)
+        outputDir.deleteRecursively()
         copy {
             from(allayApiRuntimeStubModuleDir)
             into(outputDir)
         }
 
-        val ruffPath = ruffInstallDir.get().asFile.absolutePath
-        val existingPythonPath = System.getenv("PYTHONPATH")
-        val pythonPath = if (existingPythonPath.isNullOrBlank()) {
-            ruffPath
-        } else {
-            "$ruffPath${File.pathSeparator}$existingPythonPath"
-        }
-
         execOperations.exec {
-            environment("PYTHONPATH", pythonPath)
+            environment("PYTHONPATH", prependPythonPath(ruffInstallDir.get().asFile.absolutePath))
             commandLine(pythonCommand("-m", "ruff", "format", outputDir.absolutePath))
         }
     }
@@ -276,29 +331,15 @@ val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") 
     into(pythonStubPackageDir)
 
     doLast {
-        val pyprojectFile = pythonStubPackageDir.get().file("pyproject.toml").asFile
-        val original = pyprojectFile.readText()
-        val packagesLine = Regex("""packages = \[(.*)]""").find(original)
-            ?: throw GradleException("Unable to patch generated pyproject.toml packages list.")
-        val packages = packagesLine.groupValues[1]
-            .split(',')
-            .map(String::trim)
-            .filter(String::isNotEmpty)
-            .toMutableList()
-        if (!packages.contains("\"allaystone\"")) {
-            packages += "\"allaystone\""
-        }
-        pyprojectFile.writeText(
-            original.replace(packagesLine.value, "packages = [${packages.joinToString(", ")}]")
-        )
+        patchStubPackagePyproject(pythonStubPackageDir.get().file("pyproject.toml").asFile)
     }
 }
 
 val generatePythonResourceList = tasks.register("generatePythonResourceList") {
-    dependsOn(syncGeneratedPythonStubs)
     inputs.dir(pythonHelperSourceDir)
     inputs.dir(generatedPythonSourceDir)
     outputs.file(pythonResourceListFile)
+    dependsOn(syncGeneratedPythonStubs)
 
     doLast {
         val outputFile = pythonResourceListFile.get().asFile
@@ -322,46 +363,23 @@ val generatePythonResourceList = tasks.register("generatePythonResourceList") {
     }
 }
 
+tasks.named("processResources") {
+    dependsOn(generatePythonResourceList)
+}
+
 val mergedServiceFilesDir = layout.buildDirectory.dir("generated/merged-service-files")
 
 val mergeRuntimeServiceFiles = tasks.register("mergeRuntimeServiceFiles") {
+    val outputDir = mergedServiceFilesDir.get().asFile
+
     inputs.files(configurations.runtimeClasspath)
     outputs.dir(mergedServiceFilesDir)
 
     doLast {
-        val outputDir = mergedServiceFilesDir.get().asFile
-        delete(outputDir)
+        outputDir.deleteRecursively()
         outputDir.mkdirs()
 
-        val merged = linkedMapOf<String, LinkedHashSet<String>>()
-        configurations.runtimeClasspath.get().files
-            .filter { it.isFile && it.extension == "jar" }
-            .sortedBy { it.name }
-            .forEach { jarFile ->
-                JarFile(jarFile).use { jar ->
-                    val entries = jar.entries()
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-                        if (entry.isDirectory || !entry.name.startsWith("META-INF/services/")) {
-                            continue
-                        }
-
-                        val lines = jar.getInputStream(entry).bufferedReader().useLines { sequence ->
-                            sequence
-                                .map(String::trim)
-                                .filter(String::isNotEmpty)
-                                .toList()
-                        }
-                        if (lines.isEmpty()) {
-                            continue
-                        }
-
-                        merged.getOrPut(entry.name) { linkedSetOf() }.addAll(lines)
-                    }
-                }
-            }
-
-        merged.forEach { (path, lines) ->
+        mergeServiceDefinitions(configurations.runtimeClasspath.get().files).forEach { (path, lines) ->
             val destination = outputDir.resolve(path)
             destination.parentFile.mkdirs()
             destination.writeText(
@@ -369,10 +387,6 @@ val mergeRuntimeServiceFiles = tasks.register("mergeRuntimeServiceFiles") {
             )
         }
     }
-}
-
-tasks.named("processResources") {
-    dependsOn(generatePythonResourceList)
 }
 
 tasks.shadowJar {
