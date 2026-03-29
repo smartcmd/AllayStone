@@ -1,20 +1,30 @@
 package org.allaymc.allaystone;
 
 import org.allaymc.api.plugin.Plugin;
+import org.allaymc.api.server.Server;
 
-public class AllayStone extends Plugin {
+public final class AllayStone extends Plugin {
+    private PythonRuntime runtime;
+
     @Override
     public void onLoad() {
-        this.pluginLogger.info("JavaPluginTemplate is loaded!");
+        runtime = new PythonRuntime(getPluginContainer().dataFolder());
+        var pluginManager = Server.getInstance().getPluginManager();
+        pluginManager.registerCustomSource(new WheelPluginSource());
+        pluginManager.registerCustomLoaderFactory(new WheelPluginLoader.Factory(runtime));
+        pluginLogger.info("Registered GraalPy wheel plugin loader.");
     }
 
     @Override
     public void onEnable() {
-        this.pluginLogger.info("JavaPluginTemplate is enabled!");
+        pluginLogger.info("AllayStone is enabled.");
     }
 
     @Override
     public void onDisable() {
-        this.pluginLogger.info("JavaPluginTemplate is disabled!");
+        if (runtime != null) {
+            runtime.close();
+        }
+        pluginLogger.info("AllayStone is disabled.");
     }
 }
