@@ -42,10 +42,25 @@ jobs:
           build-scan-publish: true
           build-scan-terms-of-use-url: "https://gradle.com/terms-of-service"
           build-scan-terms-of-use-agree: "yes"
-      - name: Build
-        run: ./gradlew shadowJar
-      - name: Upload Artifact
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build jar and prepare stub package
+        run: ./gradlew shadowJar preparePythonStubPackage
+      - name: Build stub wheel
+        working-directory: build/generated/python-stub-package
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+      - name: Upload jar artifact
         uses: actions/upload-artifact@v4
         if: success() && contains(github.ref_name, 'master')
         with:
+          name: allaystone-jar
           path: build/libs/*.jar
+      - name: Upload stub wheel artifact
+        uses: actions/upload-artifact@v4
+        if: success() && contains(github.ref_name, 'master')
+        with:
+          name: allaystone-python-stubs
+          path: build/generated/python-stub-package/dist/*.whl
