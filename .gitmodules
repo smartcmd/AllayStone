@@ -3,4 +3,4 @@
 	url = https://github.com/AllayMC/Allay.git
 [submodule "external/graalpy-extensions"]
 	path = external/graalpy-extensions
-	url = https://github.com/oracle/graalpy-extensions.git
+	url = https://github.com/smartcmd/graalpy-extensions.git
