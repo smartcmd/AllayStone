@@ -57,6 +57,7 @@ val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/pyth
 val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
 val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
 val allayApiStubModuleDir = layout.buildDirectory.dir("generated/allay-api-stubs")
+val allayApiRuntimeStubModuleDir = layout.buildDirectory.dir("generated/allay-api-runtime-stubs")
 val pythonStubPackageDir = layout.buildDirectory.dir("generated/python-stub-package")
 val pythonResourceListFile = generatedResourcesDir.map { it.file("python/resource-list.txt") }
 
@@ -114,20 +115,83 @@ val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPyt
 
     (options as StandardJavadocDocletOptions).apply {
         encoding = "UTF-8"
+        addStringOption("Xj2pyi-propertySynthesis", "false")
     }
 }
 
-val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") {
+val fixGeneratedAllayApiRuntimeStubs = tasks.register("fixGeneratedAllayApiRuntimeStubs") {
     dependsOn(generateAllayApiPythonStubs)
-    from(allayApiStubModuleDir) {
+    outputs.dir(allayApiRuntimeStubModuleDir)
+
+    doLast {
+        val outputDir = allayApiRuntimeStubModuleDir.get().asFile
+        delete(outputDir)
+        copy {
+            from(allayApiStubModuleDir)
+            into(outputDir)
+        }
+
+        val nestedClassNames = linkedMapOf<String, String>()
+        configurations.compileClasspath.get().files
+            .filter { it.isFile && it.extension == "jar" }
+            .sortedBy { it.name }
+            .forEach { jarFile ->
+                JarFile(jarFile).use { jar ->
+                    val entries = jar.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        if (entry.isDirectory || !entry.name.startsWith("org/allaymc/api/") || !entry.name.endsWith(".class") || '$' !in entry.name) {
+                            continue
+                        }
+
+                        val binaryName = entry.name.removeSuffix(".class").replace('/', '.')
+                        val nestedSegments = binaryName
+                            .substringAfter("org.allaymc.api.")
+                            .split('$')
+                            .drop(1)
+                        if (nestedSegments.isEmpty() || nestedSegments.any { segment ->
+                                segment.isEmpty() ||
+                                    !Character.isJavaIdentifierStart(segment[0]) ||
+                                    segment.any { ch -> !Character.isJavaIdentifierPart(ch) }
+                            }) {
+                            continue
+                        }
+
+                        nestedClassNames.putIfAbsent(binaryName.replace('$', '.'), binaryName)
+                    }
+                }
+            }
+
+        fileTree(outputDir) {
+            include("**/__init__.py")
+        }.forEach { stubFile ->
+            val original = stubFile.readText()
+            var updated = original
+            nestedClassNames.forEach { (canonicalName, binaryName) ->
+                updated = updated.replace("java.type(\"$canonicalName\")", "java.type(\"$binaryName\")")
+            }
+            if (updated != original) {
+                stubFile.writeText(updated)
+            }
+        }
+    }
+}
+
+generateAllayApiPythonStubs.configure {
+    finalizedBy(fixGeneratedAllayApiRuntimeStubs)
+}
+
+val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") {
+    dependsOn(fixGeneratedAllayApiRuntimeStubs)
+    from(allayApiRuntimeStubModuleDir) {
         include("allay/**")
     }
     into(generatedPythonSourceDir)
 }
 
 val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") {
-    dependsOn(generateAllayApiPythonStubs)
-    from(allayApiStubModuleDir) {
+    dependsOn(fixGeneratedAllayApiRuntimeStubs)
+    from(allayApiRuntimeStubModuleDir) {
         include("allay/**")
         include("pyproject.toml")
     }
