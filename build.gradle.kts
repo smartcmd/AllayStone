@@ -14,6 +14,7 @@ group = "org.allaymc.allaystone"
 description = "A python plugin loader & runtime for AllayMC using GraalPython, inspired by Endstone"
 version = "0.1.1-SNAPSHOT"
 val allayApiVersion = "0.27.0"
+val lombokVersion = "1.18.34"
 
 java {
     toolchain {
@@ -40,11 +41,18 @@ dependencies {
     implementation("org.graalvm.python:python-resources:25.0.2")
     implementation("org.graalvm.truffle:truffle-runtime:25.0.2")
 
-    compileOnly("org.projectlombok:lombok:1.18.34")
-    annotationProcessor("org.projectlombok:lombok:1.18.34")
+    compileOnly("org.projectlombok:lombok:$lombokVersion")
+    annotationProcessor("org.projectlombok:lombok:$lombokVersion")
+}
+
+val delombok by configurations.creating
+
+dependencies {
+    delombok("org.projectlombok:lombok:$lombokVersion")
 }
 
 val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
+val allayApiDelombokedSourceDir = layout.buildDirectory.dir("generated/delombok/allay-api")
 val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/python/src")
 val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
 val generatedPythonSourceDir = generatedResourcesDir.map { it.dir("python/src") }
@@ -66,9 +74,36 @@ val verifyAllaySubmodule = tasks.register("verifyAllaySubmodule") {
     }
 }
 
-val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPythonStubs") {
+val delombokAllayApi = tasks.register<JavaExec>("delombokAllayApi") {
     dependsOn(verifyAllaySubmodule)
-    source = fileTree(allayApiSourceDir) {
+    inputs.dir(allayApiSourceDir)
+    inputs.files(configurations.compileClasspath)
+    outputs.dir(allayApiDelombokedSourceDir)
+
+    val outputDir = allayApiDelombokedSourceDir.get().asFile
+
+    classpath(delombok)
+    mainClass.set("lombok.launch.Main")
+    args(
+        "delombok",
+        allayApiSourceDir.asFile.absolutePath,
+        "--target",
+        outputDir.absolutePath,
+        "--classpath",
+        configurations.compileClasspath.get().asPath,
+        "--encoding",
+        "UTF-8"
+    )
+
+    doFirst {
+        delete(outputDir)
+        outputDir.mkdirs()
+    }
+}
+
+val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPythonStubs") {
+    dependsOn(delombokAllayApi)
+    source = fileTree(allayApiDelombokedSourceDir) {
         include("org/allaymc/api/**/*.java")
     }
     classpath = configurations.compileClasspath.get()
