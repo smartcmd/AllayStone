@@ -2,7 +2,11 @@ package org.allaymc.allaystone;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.EnvironmentAccess;
+import org.graalvm.polyglot.HostAccess;
+import org.graalvm.polyglot.PolyglotAccess;
 import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -170,6 +174,17 @@ final class PythonRuntime implements AutoCloseable {
                 .engine(engine)
                 .allowExperimentalOptions(true)
                 .allowAllAccess(true)
+                .allowHostAccess(HostAccess.ALL)
+                .allowHostClassLookup(className -> true)
+                .allowHostClassLoading(true)
+                .allowInnerContextOptions(true)
+                .allowNativeAccess(true)
+                .allowCreateThread(true)
+                .allowCreateProcess(true)
+                .allowEnvironmentAccess(EnvironmentAccess.INHERIT)
+                .allowPolyglotAccess(PolyglotAccess.ALL)
+                .allowIO(IOAccess.ALL)
+                .allowValueSharing(true)
                 .build();
     }
 
