@@ -1,4 +1,4 @@
-name: Release Python Stubs
+name: Release Assets
 
 on:
   release:
@@ -36,8 +36,8 @@ jobs:
           cache-overwrite-existing: true
           cache-read-only: false
 
-      - name: Prepare stub package
-        run: ./gradlew preparePythonStubPackage
+      - name: Build shaded jar and prepare stub package
+        run: ./gradlew shadowJar preparePythonStubPackage
 
       - name: Build wheel
         working-directory: build/generated/python-stub-package
@@ -45,7 +45,7 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --wheel
 
-      - name: Upload wheel to release
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" build/generated/python-stub-package/dist/*.whl --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" build/libs/*-shaded.jar build/generated/python-stub-package/dist/*.whl --clobber

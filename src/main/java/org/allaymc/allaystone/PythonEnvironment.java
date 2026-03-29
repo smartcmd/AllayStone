@@ -129,6 +129,7 @@ final class PythonEnvironment {
                 "--no-cache-dir",
                 "--no-warn-script-location",
                 "--disable-pip-version-check",
+                "--use-deprecated=legacy-certs",
                 "--prefix",
                 INSTALL_PREFIX.toAbsolutePath().toString(),
                 "--upgrade",

@@ -40,8 +40,8 @@ dependencies {
     implementation("org.graalvm.python:python-resources:25.0.2")
     implementation("org.graalvm.truffle:truffle-runtime:25.0.2")
 
-    compileOnly(group = "org.projectlombok", name = "lombok", version = "1.18.34")
-    annotationProcessor(group = "org.projectlombok", name = "lombok", version = "1.18.34")
+    compileOnly("org.projectlombok:lombok:1.18.34")
+    annotationProcessor("org.projectlombok:lombok:1.18.34")
 }
 
 val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")

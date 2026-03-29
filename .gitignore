@@ -29,8 +29,10 @@ bin/
 /nbproject/private/
 /nbbuild/
 /dist/
+dist/
 /nbdist/
 /.nb-gradle/
+*.egg-info/
 
 ### VS Code ###
 .vscode/
