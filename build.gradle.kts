@@ -12,7 +12,7 @@ plugins {
 
 group = "org.allaymc.allaystone"
 description = "A python plugin loader & runtime for AllayMC using GraalPython, inspired by Endstone"
-version = "0.1.0"
+version = "0.1.1-SNAPSHOT"
 val allayApiVersion = "0.27.0"
 
 java {
