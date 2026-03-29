@@ -2,7 +2,6 @@ package org.allaymc.allaystone;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
-import org.graalvm.python.embedding.GraalPyResources;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -68,7 +67,7 @@ final class PythonRuntime implements AutoCloseable {
 
     PythonContextHandle createContext(Path pluginSourceRoot) {
         ensureOpen();
-        var context = GraalPyResources.contextBuilder()
+        var context = Context.newBuilder("python")
                 .engine(engine)
                 .allowExperimentalOptions(true)
                 .allowAllAccess(true)
