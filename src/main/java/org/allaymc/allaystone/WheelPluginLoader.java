@@ -9,31 +9,16 @@ import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.StringReader;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 
 import static org.allaymc.api.plugin.PluginContainer.createPluginContainer;
 
 final class WheelPluginLoader implements PluginLoader {
     private static final Logger LOGGER = LoggerFactory.getLogger(WheelPluginLoader.class);
-    private static final java.nio.file.PathMatcher WHEEL_MATCHER =
-            FileSystems.getDefault().getPathMatcher("glob:**.whl");
     private static final String RUNTIME_PLUGIN_NAME = "AllayStone";
 
     private static final String IMPORT_PLUGIN_CLASS = """
@@ -56,14 +41,14 @@ final class WheelPluginLoader implements PluginLoader {
             """;
 
     private final PythonRuntime runtime;
+    private final PythonEnvironment environment;
     private final Path pluginPath;
-    private DistributionMetadata distributionMetadata;
-    private EntryPointSpec entryPoint;
-    private Path installRoot;
+    private PythonEnvironment.InstalledPlugin installedPlugin;
     private PythonPluginDescriptor descriptor;
 
-    WheelPluginLoader(PythonRuntime runtime, Path pluginPath) {
+    WheelPluginLoader(PythonRuntime runtime, PythonEnvironment environment, Path pluginPath) {
         this.runtime = runtime;
+        this.environment = environment;
         this.pluginPath = pluginPath;
     }
 
@@ -78,16 +63,14 @@ final class WheelPluginLoader implements PluginLoader {
             return descriptor;
         }
 
-        var wheel = inspectWheel();
-        try (var context = runtime.createContext(wheel.installRoot())) {
-            var pluginClass = loadPluginClass(context, wheel.entryPoint());
-            descriptor = buildDescriptor(pluginClass, wheel.distributionMetadata(), wheel.entryPoint());
+        var installedPlugin = environment.loadInstalledPlugin(pluginPath);
+        try (var context = runtime.createContext(List.of(), environment.sitePackageDirs())) {
+            var pluginClass = loadPluginClass(context, installedPlugin.entryPoint());
+            descriptor = buildDescriptor(pluginClass, installedPlugin.distributionMetadata(), installedPlugin.entryPoint());
             if (descriptor.getAPIVersion().isBlank()) {
                 LOGGER.warn("Python plugin {} does not declare api_version.", descriptor.getName());
             }
-            distributionMetadata = wheel.distributionMetadata();
-            entryPoint = wheel.entryPoint();
-            installRoot = wheel.installRoot();
+            this.installedPlugin = installedPlugin;
             return descriptor;
         }
     }
@@ -95,10 +78,7 @@ final class WheelPluginLoader implements PluginLoader {
     @Override
     public PluginContainer loadPlugin() {
         var descriptor = (PythonPluginDescriptor) loadDescriptor();
-        var bridge = new PythonPluginBridge(
-                this,
-                createLoadedPlugin(Objects.requireNonNull(entryPoint), Objects.requireNonNull(installRoot))
-        );
+        var bridge = new PythonPluginBridge(this, createLoadedPlugin(requireInstalledPlugin()));
         return createPluginContainer(
                 bridge,
                 descriptor,
@@ -109,36 +89,20 @@ final class WheelPluginLoader implements PluginLoader {
 
     synchronized LoadedPythonPlugin reloadPlugin() {
         var descriptor = (PythonPluginDescriptor) loadDescriptor();
-        var wheel = inspectWheel();
-        if (!normalizeName(wheel.entryPoint().name()).equals(descriptor.getName())) {
-            throw new PluginException(
-                    "Reloaded Python plugin name " + wheel.entryPoint().name() + " does not match loaded plugin " + descriptor.getName() + "."
-            );
+        var reloadedPlugin = environment.reloadPlugin(descriptor.getName());
+        if (!reloadedPlugin.entryPoint().name().equals(descriptor.getName())) {
+            throw new PluginException("Reloaded Python plugin name does not match loaded plugin " + descriptor.getName() + ".");
         }
-
-        distributionMetadata = wheel.distributionMetadata();
-        entryPoint = wheel.entryPoint();
-        installRoot = wheel.installRoot();
-        return createLoadedPlugin(entryPoint, installRoot);
+        installedPlugin = reloadedPlugin;
+        return createLoadedPlugin(reloadedPlugin);
     }
 
-    private WheelData inspectWheel() {
-        try (var zipFile = new ZipFile(pluginPath.toFile())) {
-            var distributionMetadata = readDistributionMetadata(zipFile);
-            var entryPoint = readEntryPoint(zipFile, distributionMetadata.distributionName());
-            var installRoot = extractWheel(zipFile, distributionMetadata);
-            return new WheelData(distributionMetadata, entryPoint, installRoot);
-        } catch (IOException e) {
-            throw new PluginException("Unable to inspect Python wheel " + pluginPath.getFileName() + ".", e);
-        }
-    }
-
-    private LoadedPythonPlugin createLoadedPlugin(EntryPointSpec entryPoint, Path installRoot) {
-        var context = runtime.createContext(installRoot);
+    private LoadedPythonPlugin createLoadedPlugin(PythonEnvironment.InstalledPlugin installedPlugin) {
+        var context = runtime.createContext(List.of(), environment.sitePackageDirs());
         try {
-            var pluginClass = loadPluginClass(context, entryPoint);
+            var pluginClass = loadPluginClass(context, installedPlugin.entryPoint());
             if (!pluginClass.canInstantiate()) {
-                throw new PluginException("Python plugin class " + entryPoint.rawValue() + " is not instantiable.");
+                throw new PluginException("Python plugin class " + installedPlugin.entryPoint().rawValue() + " is not instantiable.");
             }
 
             var pluginInstance = context.call(ignored -> pluginClass.newInstance());
@@ -149,7 +113,10 @@ final class WheelPluginLoader implements PluginLoader {
         }
     }
 
-    private Value loadPluginClass(PythonRuntime.PythonContextHandle context, EntryPointSpec entryPoint) {
+    private static Value loadPluginClass(
+            PythonRuntime.PythonContextHandle context,
+            PythonDistribution.EntryPointSpec entryPoint
+    ) {
         return context.call(polyglot -> {
             var bindings = polyglot.getBindings("python");
             bindings.putMember("__allaystone_module_name", entryPoint.moduleName());
@@ -161,8 +128,8 @@ final class WheelPluginLoader implements PluginLoader {
 
     private PythonPluginDescriptor buildDescriptor(
             Value pluginClass,
-            DistributionMetadata distributionMetadata,
-            EntryPointSpec entryPoint
+            PythonDistribution.DistributionMetadata distributionMetadata,
+            PythonDistribution.EntryPointSpec entryPoint
     ) {
         var pluginName = normalizeName(entryPoint.name());
         var version = readString(pluginClass.getMember("version"), distributionMetadata.version());
@@ -193,222 +160,6 @@ final class WheelPluginLoader implements PluginLoader {
                 dependencies,
                 website
         );
-    }
-
-    private Path extractWheel(ZipFile zipFile, DistributionMetadata distributionMetadata) throws IOException {
-        var installRoot = runtime.prepareInstallRoot(normalizeName(distributionMetadata.distributionName()));
-        Enumeration<? extends ZipEntry> entries = zipFile.entries();
-        while (entries.hasMoreElements()) {
-            var entry = entries.nextElement();
-            if (entry.isDirectory()) {
-                continue;
-            }
-
-            var mappedPath = mapWheelEntry(entry.getName());
-            if (mappedPath == null || mappedPath.isBlank()) {
-                continue;
-            }
-
-            var destination = installRoot.resolve(mappedPath).normalize();
-            if (!destination.startsWith(installRoot)) {
-                throw new PluginException("Python wheel " + pluginPath.getFileName() + " contains invalid entry " + entry.getName() + ".");
-            }
-
-            Files.createDirectories(Objects.requireNonNull(destination.getParent()));
-            try (var in = zipFile.getInputStream(entry)) {
-                Files.copy(in, destination, StandardCopyOption.REPLACE_EXISTING);
-            }
-        }
-        return installRoot;
-    }
-
-    private static String mapWheelEntry(String entryName) {
-        var marker = ".data/purelib/";
-        var markerIndex = entryName.indexOf(marker);
-        if (markerIndex >= 0) {
-            return entryName.substring(markerIndex + marker.length());
-        }
-        if (entryName.contains(".data/")) {
-            return null;
-        }
-        return entryName;
-    }
-
-    private static DistributionMetadata readDistributionMetadata(ZipFile zipFile) throws IOException {
-        var metadataEntry = findDistInfoEntry(zipFile, "/METADATA");
-        if (metadataEntry == null) {
-            throw new PluginException("Python wheel " + zipFile.getName() + " does not contain a METADATA file.");
-        }
-
-        var fields = parseMetadataFields(readTextEntry(zipFile, metadataEntry));
-        var distributionName = firstField(fields, "Name");
-        var version = firstField(fields, "Version");
-        if (distributionName == null || distributionName.isBlank()) {
-            throw new PluginException("Python wheel " + zipFile.getName() + " does not declare a distribution name.");
-        }
-        if (version == null || version.isBlank()) {
-            throw new PluginException("Python wheel " + zipFile.getName() + " does not declare a version.");
-        }
-
-        var authors = new ArrayList<String>();
-        var author = firstField(fields, "Author");
-        if (author != null && !author.isBlank()) {
-            authors.add(author);
-        }
-        if (authors.isEmpty()) {
-            var authorEmail = firstField(fields, "Author-email");
-            if (authorEmail != null && !authorEmail.isBlank()) {
-                authors.add(authorEmail);
-            }
-        }
-
-        return new DistributionMetadata(
-                distributionName,
-                version,
-                defaultString(firstField(fields, "Summary")),
-                authors,
-                resolveWebsite(fields)
-        );
-    }
-
-    private static EntryPointSpec readEntryPoint(ZipFile zipFile, String distributionName) throws IOException {
-        var entryPointEntry = findDistInfoEntry(zipFile, "/entry_points.txt");
-        if (entryPointEntry == null) {
-            throw new PluginException("Python wheel " + zipFile.getName() + " does not define allaystone entry points.");
-        }
-
-        var sections = parseIniSections(readTextEntry(zipFile, entryPointEntry));
-        var groupEntries = sections.getOrDefault("allaystone", Collections.emptyMap());
-        if (groupEntries.size() != 1) {
-            throw new PluginException("Python wheel " + zipFile.getName() + " must define exactly one [allaystone] entry point.");
-        }
-
-        var entry = groupEntries.entrySet().iterator().next();
-        var entryName = normalizeName(entry.getKey());
-        var expectedDistributionName = "allaystone-" + entryName;
-        if (!normalizeName(distributionName).equals(expectedDistributionName)) {
-            throw new PluginException(
-                    "Wheel distribution " + distributionName + " must match the allaystone entry point name " + entry.getKey() + "."
-            );
-        }
-
-        var value = entry.getValue().trim();
-        var separator = value.indexOf(':');
-        if (separator <= 0 || separator == value.length() - 1) {
-            throw new PluginException("Invalid allaystone entry point value: " + value + ".");
-        }
-
-        return new EntryPointSpec(entryName, value, value.substring(0, separator), value.substring(separator + 1));
-    }
-
-    private static ZipEntry findDistInfoEntry(ZipFile zipFile, String suffix) {
-        return zipFile.stream()
-                .filter(entry -> entry.getName().endsWith(".dist-info" + suffix))
-                .findFirst()
-                .orElse(null);
-    }
-
-    private static String readTextEntry(ZipFile zipFile, ZipEntry entry) throws IOException {
-        try (var in = zipFile.getInputStream(entry)) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
-    }
-
-    private static Map<String, List<String>> parseMetadataFields(String content) throws IOException {
-        var values = new LinkedHashMap<String, List<String>>();
-        try (var reader = new BufferedReader(new StringReader(content))) {
-            String currentKey = null;
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.isBlank()) {
-                    currentKey = null;
-                    continue;
-                }
-                if ((line.startsWith(" ") || line.startsWith("\t")) && currentKey != null) {
-                    var currentValues = values.get(currentKey);
-                    var lastIndex = currentValues.size() - 1;
-                    currentValues.set(lastIndex, currentValues.get(lastIndex) + "\n" + line.strip());
-                    continue;
-                }
-
-                var separator = line.indexOf(':');
-                if (separator <= 0) {
-                    continue;
-                }
-
-                currentKey = line.substring(0, separator);
-                values.computeIfAbsent(currentKey, ignored -> new ArrayList<>())
-                        .add(line.substring(separator + 1).trim());
-            }
-        }
-        return values;
-    }
-
-    private static Map<String, Map<String, String>> parseIniSections(String content) throws IOException {
-        var sections = new LinkedHashMap<String, Map<String, String>>();
-        try (var reader = new BufferedReader(new StringReader(content))) {
-            String currentSection = null;
-            String line;
-            while ((line = reader.readLine()) != null) {
-                var stripped = line.trim();
-                if (stripped.isEmpty() || stripped.startsWith("#") || stripped.startsWith(";")) {
-                    continue;
-                }
-                if (stripped.startsWith("[") && stripped.endsWith("]")) {
-                    currentSection = stripped.substring(1, stripped.length() - 1).trim();
-                    sections.computeIfAbsent(currentSection, ignored -> new LinkedHashMap<>());
-                    continue;
-                }
-                if (currentSection == null) {
-                    continue;
-                }
-
-                var separator = stripped.indexOf('=');
-                if (separator <= 0) {
-                    continue;
-                }
-
-                sections.get(currentSection).put(
-                        stripped.substring(0, separator).trim(),
-                        stripped.substring(separator + 1).trim()
-                );
-            }
-        }
-        return sections;
-    }
-
-    private static String firstField(Map<String, List<String>> fields, String name) {
-        var values = fields.get(name);
-        if (values == null || values.isEmpty()) {
-            return null;
-        }
-        return values.getFirst();
-    }
-
-    private static String resolveWebsite(Map<String, List<String>> fields) {
-        var homePage = firstField(fields, "Home-page");
-        if (homePage != null && !homePage.isBlank()) {
-            return homePage;
-        }
-
-        var projectUrls = fields.get("Project-URL");
-        if (projectUrls == null) {
-            return "";
-        }
-        for (var projectUrl : projectUrls) {
-            var separator = projectUrl.indexOf(',');
-            if (separator >= 0 && separator < projectUrl.length() - 1) {
-                return projectUrl.substring(separator + 1).trim();
-            }
-            if (!projectUrl.isBlank()) {
-                return projectUrl;
-            }
-        }
-        return "";
-    }
-
-    private static String defaultString(String value) {
-        return value == null ? "" : value;
     }
 
     private static String readString(Value value, String defaultValue) {
@@ -460,39 +211,28 @@ final class WheelPluginLoader implements PluginLoader {
         return normalized.equals(normalizeName(RUNTIME_PLUGIN_NAME)) ? RUNTIME_PLUGIN_NAME : normalized;
     }
 
+    private PythonEnvironment.InstalledPlugin requireInstalledPlugin() {
+        return Objects.requireNonNull(installedPlugin);
+    }
+
     static final class Factory implements PluginLoader.Factory {
         private final PythonRuntime runtime;
+        private final PythonEnvironment environment;
 
-        Factory(PythonRuntime runtime) {
+        Factory(PythonRuntime runtime, PythonEnvironment environment) {
             this.runtime = runtime;
+            this.environment = environment;
         }
 
         @Override
         public boolean canLoad(Path pluginPath) {
-            return Files.isRegularFile(pluginPath) && WHEEL_MATCHER.matches(pluginPath);
+            return PythonDistribution.isMetadataPath(pluginPath);
         }
 
         @Override
         public PluginLoader create(Path pluginPath) {
-            return new WheelPluginLoader(runtime, pluginPath);
+            return new WheelPluginLoader(runtime, environment, pluginPath);
         }
-    }
-
-    private record DistributionMetadata(
-            String distributionName,
-            String version,
-            String summary,
-            List<String> authors,
-            String website
-    ) {
-    }
-
-    private record EntryPointSpec(
-            String name,
-            String rawValue,
-            String moduleName,
-            String attributePath
-    ) {
     }
 
     static final class LoadedPythonPlugin implements AutoCloseable {
@@ -516,13 +256,6 @@ final class WheelPluginLoader implements PluginLoader {
         public void close() {
             context.close();
         }
-    }
-
-    private record WheelData(
-            DistributionMetadata distributionMetadata,
-            EntryPointSpec entryPoint,
-            Path installRoot
-    ) {
     }
 
     private static final class PythonPluginDescriptor implements PluginDescriptor {

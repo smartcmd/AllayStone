@@ -1,13 +1,13 @@
 # Hello Python Plugin
 
-Example Python wheel plugin for AllayStone.
+Example Python plugin for AllayStone.
 
 ## Files
 
 - `pyproject.toml`: package metadata and the `[project.entry-points.allaystone]` entry that AllayStone reads.
 - `src/allaystone_hello/plugin.py`: the example plugin implementation.
 
-## Build
+## Build A Wheel
 
 ```powershell
 python -m pip wheel . --no-deps --wheel-dir dist
@@ -15,13 +15,28 @@ python -m pip wheel . --no-deps --wheel-dir dist
 
 The wheel will be created in `dist/`.
 
+## Install Editable
+
+```powershell
+python -m pip install -e . --prefix <server>/plugins/.local
+```
+
+## Remove Editable
+
+Stop the server first, then uninstall the distribution from the same prefix:
+
+```powershell
+$env:PYTHONPATH = "<server>/plugins/.local/Lib/site-packages"
+python -m pip uninstall allaystone-hello
+Remove-Item Env:PYTHONPATH
+```
+
 ## Install
 
 1. Build AllayStone with `./gradlew shadowJar`.
 2. Copy `build/libs/AllayStone-0.1.0-shaded.jar` into the server `plugins/` directory.
-3. Build this example wheel.
-4. Copy the generated `.whl` file into the same `plugins/` directory.
-5. Start the server.
+3. Either build this example wheel and copy the generated `.whl` file into the same `plugins/` directory, or install it into `plugins/.local` with editable mode.
+4. Start the server.
 
 ## Expected Result
 

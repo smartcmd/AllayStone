@@ -5,14 +5,16 @@ import org.allaymc.api.server.Server;
 
 public final class AllayStone extends Plugin {
     private PythonRuntime runtime;
+    private PythonEnvironment environment;
 
     @Override
     public void onLoad() {
         runtime = new PythonRuntime(getPluginContainer().dataFolder());
+        environment = new PythonEnvironment(runtime);
         var pluginManager = Server.getInstance().getPluginManager();
-        pluginManager.registerCustomSource(new WheelPluginSource());
-        pluginManager.registerCustomLoaderFactory(new WheelPluginLoader.Factory(runtime));
-        pluginLogger.info("Registered GraalPy wheel plugin loader.");
+        pluginManager.registerCustomSource(new WheelPluginSource(environment));
+        pluginManager.registerCustomLoaderFactory(new WheelPluginLoader.Factory(runtime, environment));
+        pluginLogger.info("Registered GraalPy plugin loader with managed prefix plugins/.local.");
     }
 
     @Override
@@ -25,6 +27,7 @@ public final class AllayStone extends Plugin {
         if (runtime != null) {
             runtime.close();
         }
+        environment = null;
         pluginLogger.info("AllayStone is disabled.");
     }
 }

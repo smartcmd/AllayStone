@@ -2,6 +2,7 @@ package org.allaymc.allaystone;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.Value;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,6 +18,7 @@ import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 final class PythonRuntime implements AutoCloseable {
     private static final String RESOURCE_LIST_PATH = "python/resource-list.txt";
@@ -26,19 +28,44 @@ final class PythonRuntime implements AutoCloseable {
     };
 
     private static final String PREPARE_PATHS = """
+            import site
             import sys
 
             helper = __allaystone_helper_src
-            plugin = __allaystone_plugin_src
-
             if helper not in sys.path:
                 sys.path.insert(0, helper)
-            if plugin not in sys.path:
-                sys.path.insert(0, plugin)
+
+            for site_dir in filter(None, __allaystone_site_dirs.splitlines()):
+                site.addsitedir(site_dir)
+
+            for module_path in filter(None, __allaystone_module_paths.splitlines()):
+                if module_path not in sys.path:
+                    sys.path.insert(0, module_path)
+            """;
+
+    private static final String SITE_PACKAGE_DIRS = """
+            import site
+
+            site.getsitepackages(prefixes=[__allaystone_prefix])
+            """;
+
+    private static final String RUN_PIP = """
+            import ensurepip
+            import sys
+            from importlib import resources
+
+            wheel = resources.files("ensurepip") / "_bundled" / f"pip-{ensurepip.version()}-py3-none-any.whl"
+            if str(wheel) not in sys.path:
+                sys.path.insert(0, str(wheel))
+
+            from pip._internal.cli.main import main as pip_main
+
+            exit_code = pip_main(list(filter(None, __allaystone_pip_args.splitlines())))
+            if exit_code:
+                raise SystemExit(exit_code)
             """;
 
     private final Path helperSourceRoot;
-    private final Path wheelRoot;
     private final Engine engine;
     private volatile boolean closed;
 
@@ -46,7 +73,6 @@ final class PythonRuntime implements AutoCloseable {
         try {
             var runtimeRoot = Files.createDirectories(dataFolder.resolve(".runtime"));
             helperSourceRoot = Files.createDirectories(runtimeRoot.resolve("src"));
-            wheelRoot = Files.createDirectories(runtimeRoot.resolve("wheels"));
             copyHelperPackage();
         } catch (IOException e) {
             throw new IllegalStateException("Unable to initialize GraalPy runtime directories.", e);
@@ -57,29 +83,38 @@ final class PythonRuntime implements AutoCloseable {
                 .build();
     }
 
-    Path prepareInstallRoot(String pluginName) {
+    List<Path> getSitePackageDirs(Path prefix) {
         ensureOpen();
-        var installRoot = wheelRoot.resolve(pluginName);
-        deleteRecursively(installRoot);
-        try {
-            return Files.createDirectories(installRoot);
-        } catch (IOException e) {
-            throw new IllegalStateException("Unable to create Python wheel install root for " + pluginName + ".", e);
+        try (var context = new PythonContextHandle(createPolyglotContext())) {
+            var result = context.call(polyglot -> {
+                polyglot.getBindings("python").putMember("__allaystone_prefix", prefix.toAbsolutePath().toString());
+                return polyglot.eval("python", SITE_PACKAGE_DIRS);
+            });
+            return toPathList(result);
         }
     }
 
-    PythonContextHandle createContext(Path pluginSourceRoot) {
+    void runPip(List<String> args) {
         ensureOpen();
-        var context = Context.newBuilder("python")
-                .engine(engine)
-                .allowExperimentalOptions(true)
-                .allowAllAccess(true)
-                .build();
-        var handle = new PythonContextHandle(context);
+        try (var context = new PythonContextHandle(createPolyglotContext())) {
+            context.run(polyglot -> {
+                polyglot.getBindings("python").putMember(
+                        "__allaystone_pip_args",
+                        args.stream().collect(Collectors.joining("\n"))
+                );
+                polyglot.eval("python", RUN_PIP);
+            });
+        }
+    }
+
+    PythonContextHandle createContext(List<Path> modulePaths, List<Path> sitePackageDirs) {
+        ensureOpen();
+        var handle = new PythonContextHandle(createPolyglotContext());
         handle.run(polyglot -> {
             var bindings = polyglot.getBindings("python");
             bindings.putMember("__allaystone_helper_src", helperSourceRoot.toAbsolutePath().toString());
-            bindings.putMember("__allaystone_plugin_src", pluginSourceRoot.toAbsolutePath().toString());
+            bindings.putMember("__allaystone_module_paths", joinPaths(modulePaths));
+            bindings.putMember("__allaystone_site_dirs", joinPaths(sitePackageDirs));
             polyglot.eval("python", PREPARE_PATHS);
         });
         return handle;
@@ -128,6 +163,32 @@ final class PythonRuntime implements AutoCloseable {
         if (closed) {
             throw new IllegalStateException("The GraalPy runtime is already closed.");
         }
+    }
+
+    private Context createPolyglotContext() {
+        return Context.newBuilder("python")
+                .engine(engine)
+                .allowExperimentalOptions(true)
+                .allowAllAccess(true)
+                .build();
+    }
+
+    private static String joinPaths(List<Path> paths) {
+        return paths.stream()
+                .map(path -> path.toAbsolutePath().toString())
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static List<Path> toPathList(Value value) {
+        if (value == null || !value.hasArrayElements()) {
+            throw new IllegalStateException("Expected GraalPy to return a list of site-packages directories.");
+        }
+
+        var result = new java.util.ArrayList<Path>();
+        for (long i = 0; i < value.getArraySize(); i++) {
+            result.add(Path.of(value.getArrayElement(i).asString()));
+        }
+        return List.copyOf(result);
     }
 
     static void deleteRecursively(Path path) {
