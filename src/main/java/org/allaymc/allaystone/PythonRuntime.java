@@ -165,6 +165,7 @@ final class PythonRuntime implements AutoCloseable {
     private Context createPolyglotContext() {
         return Context.newBuilder("python")
                 .engine(engine)
+                .hostClassLoader(PythonRuntime.class.getClassLoader())
                 .allowExperimentalOptions(true)
                 .allowAllAccess(true)
                 .allowHostAccess(HostAccess.ALL)
