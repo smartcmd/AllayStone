@@ -99,7 +99,14 @@ fun patchStubPackagePyproject(pyprojectFile: File) {
     val original = pyprojectFile.readText()
     val packagesLine = Regex("""packages = \[(.*)]""").find(original)
         ?: throw GradleException("Unable to patch generated pyproject.toml packages list.")
+    val packageDataLine = Regex("^\"\\*\" = \\[(.*)]$", RegexOption.MULTILINE).find(original)
+        ?: throw GradleException("Unable to patch generated pyproject.toml package-data list.")
     val packages = packagesLine.groupValues[1]
+        .split(',')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .toMutableList()
+    val packageData = packageDataLine.groupValues[1]
         .split(',')
         .map(String::trim)
         .filter(String::isNotEmpty)
@@ -107,9 +114,13 @@ fun patchStubPackagePyproject(pyprojectFile: File) {
     if (!packages.contains("\"allaystone\"")) {
         packages += "\"allaystone\""
     }
-    pyprojectFile.writeText(
-        original.replace(packagesLine.value, "packages = [${packages.joinToString(", ")}]")
-    )
+    if (!packageData.contains("\"py.typed\"")) {
+        packageData += "\"py.typed\""
+    }
+
+    var updated = original.replace(packagesLine.value, "packages = [${packages.joinToString(", ")}]")
+    updated = updated.replace(packageDataLine.value, "\"*\" = [${packageData.joinToString(", ")}]")
+    pyprojectFile.writeText(updated)
 }
 
 fun mergeServiceDefinitions(jars: Iterable<File>): Map<String, LinkedHashSet<String>> {
@@ -235,6 +246,8 @@ val fixGeneratedAllayApiRuntimeStubs = tasks.register("fixGeneratedAllayApiRunti
     val outputDir = allayApiRuntimeStubModuleDir.get().asFile
 
     dependsOn(generateAllayApiPythonStubs)
+    inputs.dir(allayApiStubModuleDir)
+    inputs.files(configurations.compileClasspath)
     outputs.dir(allayApiRuntimeStubModuleDir)
 
     doLast {
@@ -297,6 +310,8 @@ val formatGeneratedAllayApiPythonStubs = tasks.register("formatGeneratedAllayApi
 
     dependsOn(fixGeneratedAllayApiRuntimeStubs, installRuff)
     inputs.dir(allayApiRuntimeStubModuleDir)
+    inputs.dir(ruffInstallDir)
+    inputs.property("pythonCommand", configuredPythonExecutable ?: defaultPythonCommand.joinToString(" "))
     outputs.dir(allayApiFormattedStubModuleDir)
 
     doLast {
@@ -333,7 +348,16 @@ val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") 
     into(pythonStubPackageDir)
 
     doLast {
-        patchStubPackagePyproject(pythonStubPackageDir.get().file("pyproject.toml").asFile)
+        val outputDir = pythonStubPackageDir.get().asFile
+        patchStubPackagePyproject(File(outputDir, "pyproject.toml"))
+        File(outputDir, "allay/api/py.typed").apply {
+            parentFile.mkdirs()
+            writeText("")
+        }
+        File(outputDir, "allaystone/py.typed").apply {
+            parentFile.mkdirs()
+            writeText("")
+        }
     }
 }
 
