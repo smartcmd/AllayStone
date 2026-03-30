@@ -1,5 +1,7 @@
 from typing import Any, ClassVar, Optional, Sequence
 
+from allay.api.plugin.Plugin import Plugin as JavaPlugin
+from allay.api.server.Server import Server
 
 class Plugin:
     version: ClassVar[Optional[str]]
@@ -10,11 +12,11 @@ class Plugin:
     depend: ClassVar[Optional[Sequence[str]]]
     soft_depend: ClassVar[Optional[Sequence[str]]]
 
-    server: Any
+    server: Server
     logger: Any
     data_folder: str
     name: str
-    java_plugin: Any
+    java_plugin: JavaPlugin
 
     def on_load(self) -> None: ...
     def on_enable(self) -> None: ...
