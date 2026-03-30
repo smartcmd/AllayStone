@@ -7,13 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 final class PythonEnvironment {
@@ -163,12 +157,12 @@ final class PythonEnvironment {
                         if (existing != null && !existing.metadataPath().equals(distribution.metadataPath())) {
                             throw new PluginException(
                                     "Found multiple installed Python distributions named " +
-                                            distribution.normalizedName() +
-                                            ": " +
-                                            existing.metadataPath() +
-                                            " and " +
-                                            distribution.metadataPath() +
-                                            "."
+                                    distribution.normalizedName() +
+                                    ": " +
+                                    existing.metadataPath() +
+                                    " and " +
+                                    distribution.metadataPath() +
+                                    "."
                             );
                         }
                     }
@@ -331,8 +325,8 @@ final class PythonEnvironment {
 
     private boolean isPluginWheel(Path path) {
         return path != null
-                && path.startsWith(WheelPluginSource.PLUGIN_DIRECTORY.toAbsolutePath().normalize())
-                && WHEEL_MATCHER.matches(path);
+               && path.startsWith(WheelPluginSource.PLUGIN_DIRECTORY.toAbsolutePath().normalize())
+               && WHEEL_MATCHER.matches(path);
     }
 
     private void ensureDirectory(Path directory) {

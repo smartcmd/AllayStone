@@ -86,8 +86,8 @@ fun collectNestedClassNames(jars: Iterable<File>): Map<String, String> {
                     val nestedSegments = binaryName.substringAfter("org.allaymc.api.").split('$').drop(1)
                     if (nestedSegments.isEmpty() || nestedSegments.any { segment ->
                             segment.isEmpty() ||
-                                !Character.isJavaIdentifierStart(segment[0]) ||
-                                segment.any { ch -> !Character.isJavaIdentifierPart(ch) }
+                                    !Character.isJavaIdentifierStart(segment[0]) ||
+                                    segment.any { ch -> !Character.isJavaIdentifierPart(ch) }
                         }) {
                         continue
                     }
@@ -304,8 +304,8 @@ val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPyt
     setDestinationDir(allayApiStubModuleDir.get().asFile)
     packageMap.set(
         "org.allaymc.api=allay.api," +
-            "org.joml=joml," +
-            "org.cloudburstmc.nbt=cloudburst.nbt"
+                "org.joml=joml," +
+                "org.cloudburstmc.nbt=cloudburst.nbt"
     )
     moduleName.set("allay-api")
     moduleVersion.set(allayApiVersion)

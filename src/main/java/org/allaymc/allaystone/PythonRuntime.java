@@ -1,21 +1,12 @@
 package org.allaymc.allaystone;
 
-import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.Engine;
-import org.graalvm.polyglot.EnvironmentAccess;
-import org.graalvm.polyglot.HostAccess;
-import org.graalvm.polyglot.PolyglotAccess;
-import org.graalvm.polyglot.Value;
+import org.graalvm.polyglot.*;
 import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.Objects;
@@ -34,14 +25,14 @@ final class PythonRuntime implements AutoCloseable {
     private static final String PREPARE_PATHS = """
             import site
             import sys
-
+            
             helper = __allaystone_helper_src
             if helper not in sys.path:
                 sys.path.insert(0, helper)
-
+            
             for site_dir in filter(None, __allaystone_site_dirs.splitlines()):
                 site.addsitedir(site_dir)
-
+            
             for module_path in filter(None, __allaystone_module_paths.splitlines()):
                 if module_path not in sys.path:
                     sys.path.insert(0, module_path)
@@ -49,7 +40,7 @@ final class PythonRuntime implements AutoCloseable {
 
     private static final String SITE_PACKAGE_DIRS = """
             import site
-
+            
             site.getsitepackages(prefixes=[__allaystone_prefix])
             """;
 
@@ -57,13 +48,13 @@ final class PythonRuntime implements AutoCloseable {
             import ensurepip
             import sys
             from importlib import resources
-
+            
             wheel = resources.files("ensurepip") / "_bundled" / f"pip-{ensurepip.version()}-py3-none-any.whl"
             if str(wheel) not in sys.path:
                 sys.path.insert(0, str(wheel))
-
+            
             from pip._internal.cli.main import main as pip_main
-
+            
             exit_code = pip_main(list(filter(None, __allaystone_pip_args.splitlines())))
             if exit_code:
                 raise SystemExit(exit_code)

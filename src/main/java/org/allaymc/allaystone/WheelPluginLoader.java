@@ -1,10 +1,6 @@
 package org.allaymc.allaystone;
 
-import org.allaymc.api.plugin.PluginContainer;
-import org.allaymc.api.plugin.PluginDependency;
-import org.allaymc.api.plugin.PluginDescriptor;
-import org.allaymc.api.plugin.PluginException;
-import org.allaymc.api.plugin.PluginLoader;
+import org.allaymc.api.plugin.*;
 import org.graalvm.polyglot.Value;
 import org.semver4j.Semver;
 import org.semver4j.range.RangeListFactory;
@@ -26,19 +22,19 @@ final class WheelPluginLoader implements PluginLoader {
     private static final String IMPORT_PLUGIN_CLASS = """
             import importlib
             from allaystone.plugin import Plugin as _AllayStonePlugin
-
+            
             module = importlib.import_module(__allaystone_module_name)
             value = module
             for segment in __allaystone_attr_path.split("."):
                 value = getattr(value, segment)
-
+            
             if not isinstance(value, type):
                 raise TypeError(f"{__allaystone_entry_point} does not resolve to a class")
             if not issubclass(value, _AllayStonePlugin):
                 raise TypeError(
                     f"{__allaystone_entry_point} must inherit from allaystone.plugin.Plugin"
                 )
-
+            
             value
             """;
 
@@ -307,74 +303,66 @@ final class WheelPluginLoader implements PluginLoader {
         }
     }
 
-    private static final class PythonPluginDescriptor implements PluginDescriptor {
-        private final String name;
-        private final String entrance;
-        private final String version;
-        private final List<String> authors;
-        private final String description;
-        private final String apiVersion;
-        private final List<PluginDependency> dependencies;
-        private final String website;
+    private record PythonPluginDescriptor(String name, String entrance, String version, List<String> authors, String description, String apiVersion,
+                                          List<PluginDependency> dependencies, String website) implements PluginDescriptor {
+            private PythonPluginDescriptor(
+                    String name,
+                    String entrance,
+                    String version,
+                    List<String> authors,
+                    String description,
+                    String apiVersion,
+                    List<PluginDependency> dependencies,
+                    String website
+            ) {
+                this.name = name;
+                this.entrance = entrance;
+                this.version = version;
+                this.authors = List.copyOf(authors);
+                this.description = description;
+                this.apiVersion = apiVersion;
+                this.dependencies = List.copyOf(dependencies);
+                this.website = website;
+            }
 
-        private PythonPluginDescriptor(
-                String name,
-                String entrance,
-                String version,
-                List<String> authors,
-                String description,
-                String apiVersion,
-                List<PluginDependency> dependencies,
-                String website
-        ) {
-            this.name = name;
-            this.entrance = entrance;
-            this.version = version;
-            this.authors = List.copyOf(authors);
-            this.description = description;
-            this.apiVersion = apiVersion;
-            this.dependencies = List.copyOf(dependencies);
-            this.website = website;
-        }
+            @Override
+            public String getName() {
+                return name;
+            }
 
-        @Override
-        public String getName() {
-            return name;
-        }
+            @Override
+            public String getEntrance() {
+                return entrance;
+            }
 
-        @Override
-        public String getEntrance() {
-            return entrance;
-        }
+            @Override
+            public String getVersion() {
+                return version;
+            }
 
-        @Override
-        public String getVersion() {
-            return version;
-        }
+            @Override
+            public List<String> getAuthors() {
+                return authors;
+            }
 
-        @Override
-        public List<String> getAuthors() {
-            return authors;
-        }
+            @Override
+            public String getDescription() {
+                return description;
+            }
 
-        @Override
-        public String getDescription() {
-            return description;
-        }
+            @Override
+            public String getAPIVersion() {
+                return apiVersion;
+            }
 
-        @Override
-        public String getAPIVersion() {
-            return apiVersion;
-        }
+            @Override
+            public List<PluginDependency> getDependencies() {
+                return dependencies;
+            }
 
-        @Override
-        public List<PluginDependency> getDependencies() {
-            return dependencies;
+            @Override
+            public String getWebsite() {
+                return website;
+            }
         }
-
-        @Override
-        public String getWebsite() {
-            return website;
-        }
-    }
 }
