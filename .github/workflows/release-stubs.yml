@@ -25,11 +25,11 @@ jobs:
           fi
 
           version="${BASH_REMATCH[1]}"
-          if gh release view "$version" >/dev/null 2>&1; then
+          if gh release view "$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             exit 0
           fi
 
-          gh release create "$version" --target "$GITHUB_SHA" --title "$version" --notes ""
+          gh release create "$version" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$version" --notes ""
 
   build-and-upload:
     if: github.event_name == 'release'
