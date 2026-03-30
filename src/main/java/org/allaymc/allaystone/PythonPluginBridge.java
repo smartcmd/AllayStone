@@ -54,8 +54,11 @@ final class PythonPluginBridge extends Plugin {
     @Override
     public void reload() {
         synchronized (lifecycleLock) {
-            var previous = requireLoadedPlugin();
-            invokeLifecycle(previous, "on_disable", true);
+            var previous = loadedPlugin;
+            if (previous != null) {
+                invokeLifecycle(previous, "on_disable", true);
+            }
+            loadedPlugin = null;
 
             WheelPluginLoader.LoadedPythonPlugin reloaded = null;
             try {
@@ -64,19 +67,13 @@ final class PythonPluginBridge extends Plugin {
                 invokeLifecycle(reloaded, "on_load", false);
                 invokeLifecycle(reloaded, "on_enable", false);
                 loadedPlugin = reloaded;
-                closePlugin(previous);
             } catch (RuntimeException e) {
                 closePlugin(reloaded);
-                try {
-                    invokeLifecycle(previous, "on_enable", false);
-                    loadedPlugin = previous;
-                } catch (RuntimeException resumeError) {
-                    closePlugin(previous);
-                    loadedPlugin = null;
-                    e.addSuppressed(resumeError);
-                }
+                closePlugin(previous);
                 throw e;
             }
+
+            closePlugin(previous);
         }
     }
 

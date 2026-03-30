@@ -6,6 +6,8 @@ import org.allaymc.api.plugin.PluginDescriptor;
 import org.allaymc.api.plugin.PluginException;
 import org.allaymc.api.plugin.PluginLoader;
 import org.graalvm.polyglot.Value;
+import org.semver4j.Semver;
+import org.semver4j.range.RangeListFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +69,7 @@ final class WheelPluginLoader implements PluginLoader {
         try (var context = runtime.createContext(List.of(), environment.sitePackageDirs())) {
             var pluginClass = loadPluginClass(context, installedPlugin.entryPoint());
             descriptor = buildDescriptor(pluginClass, installedPlugin.distributionMetadata(), installedPlugin.entryPoint());
+            validateDescriptor(descriptor);
             if (descriptor.getAPIVersion().isBlank()) {
                 LOGGER.warn("Python plugin {} does not declare api_version.", descriptor.getName());
             }
@@ -143,9 +146,9 @@ final class WheelPluginLoader implements PluginLoader {
         var website = readString(pluginClass.getMember("website"), distributionMetadata.website());
         var dependencies = new ArrayList<PluginDependency>();
         readDependencyNames(pluginClass.getMember("depend"))
-                .forEach(name -> dependencies.add(new PluginDependency(normalizeDependencyName(name), null, false)));
+                .forEach(name -> dependencies.add(new PluginDependency(canonicalDependencyName(name), null, false)));
         readDependencyNames(pluginClass.getMember("soft_depend"))
-                .forEach(name -> dependencies.add(new PluginDependency(normalizeDependencyName(name), null, true)));
+                .forEach(name -> dependencies.add(new PluginDependency(canonicalDependencyName(name), null, true)));
         if (dependencies.stream().noneMatch(dependency -> dependency.name().equalsIgnoreCase(RUNTIME_PLUGIN_NAME))) {
             dependencies.add(new PluginDependency(RUNTIME_PLUGIN_NAME, null, false));
         }
@@ -198,6 +201,49 @@ final class WheelPluginLoader implements PluginLoader {
         return readStringList(value, List.of());
     }
 
+    private static void validateDescriptor(PythonPluginDescriptor descriptor) {
+        requireNonBlank(descriptor.getName(), "Plugin name");
+        requireNonBlank(descriptor.getEntrance(), "Plugin entrance");
+        requireNonBlank(descriptor.getVersion(), "Plugin version");
+        try {
+            if (Semver.coerce(descriptor.getVersion()) == null) {
+                throw new PluginException("Plugin version is invalid (check https://semver.org/): " + descriptor.getVersion());
+            }
+        } catch (RuntimeException e) {
+            throw new PluginException("Plugin version is invalid (check https://semver.org/): " + descriptor.getVersion(), e);
+        }
+
+        requirePresent(descriptor.getAuthors(), "Plugin authors");
+        requirePresent(descriptor.getDescription(), "Plugin description");
+        requirePresent(descriptor.getDependencies(), "Plugin dependencies");
+        for (var dependency : descriptor.getDependencies()) {
+            requireNonBlank(dependency.name(), "Dependency name");
+        }
+        requirePresent(descriptor.getWebsite(), "Plugin website");
+
+        var apiVersion = requirePresent(descriptor.getAPIVersion(), "Plugin api version");
+        if (!apiVersion.isBlank()) {
+            try {
+                RangeListFactory.create(apiVersion);
+            } catch (RuntimeException e) {
+                throw new PluginException("Plugin api_version is invalid: " + apiVersion, e);
+            }
+        }
+    }
+
+    private static void requireNonBlank(String value, String fieldName) {
+        if (value == null || value.isBlank()) {
+            throw new PluginException(fieldName + " cannot be blank.");
+        }
+    }
+
+    private static <T> T requirePresent(T value, String fieldName) {
+        if (value == null) {
+            throw new PluginException(fieldName + " cannot be null.");
+        }
+        return value;
+    }
+
     private static String normalizeName(String value) {
         var normalized = value.strip().toLowerCase(Locale.ROOT).replaceAll("[-_.]+", "-");
         if (normalized.isBlank()) {
@@ -206,9 +252,12 @@ final class WheelPluginLoader implements PluginLoader {
         return normalized;
     }
 
-    private static String normalizeDependencyName(String value) {
-        var normalized = normalizeName(value);
-        return normalized.equals(normalizeName(RUNTIME_PLUGIN_NAME)) ? RUNTIME_PLUGIN_NAME : normalized;
+    private static String canonicalDependencyName(String value) {
+        var stripped = value.strip();
+        if (stripped.isBlank()) {
+            throw new PluginException("Dependency name cannot be blank.");
+        }
+        return stripped.equalsIgnoreCase(RUNTIME_PLUGIN_NAME) ? RUNTIME_PLUGIN_NAME : stripped;
     }
 
     private PythonEnvironment.InstalledPlugin requireInstalledPlugin() {

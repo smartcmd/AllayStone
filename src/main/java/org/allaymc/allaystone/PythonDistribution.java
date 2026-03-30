@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -69,7 +70,8 @@ final class PythonDistribution {
                 version,
                 defaultString(firstField(fields, "Summary")),
                 authors,
-                resolveWebsite(fields)
+                resolveWebsite(fields),
+                resolveDependencyNames(metadataPath, fields)
         );
     }
 
@@ -95,9 +97,9 @@ final class PythonDistribution {
         }
 
         var entry = groupEntries.entrySet().iterator().next();
-        var entryName = normalizeName(entry.getKey());
+        var entryName = normalizeDistributionName(entry.getKey());
         var expectedDistributionName = "allaystone-" + entryName;
-        if (!normalizeName(distributionName).equals(expectedDistributionName)) {
+        if (!normalizeDistributionName(distributionName).equals(expectedDistributionName)) {
             throw new PluginException(
                     "Installed distribution " + distributionName + " must match the allaystone entry point name " + entry.getKey() + "."
             );
@@ -235,7 +237,60 @@ final class PythonDistribution {
         return value == null ? "" : value;
     }
 
-    private static String normalizeName(String value) {
+    private static List<String> resolveDependencyNames(Path metadataPath, Map<String, List<String>> fields) {
+        var dependencyNames = new LinkedHashSet<String>();
+        var requirements = fields.get("Requires-Dist");
+        if (requirements != null) {
+            requirements.stream()
+                    .map(PythonDistribution::parseRequirementName)
+                    .filter(name -> name != null && !name.isBlank())
+                    .forEach(dependencyNames::add);
+        }
+
+        if (!dependencyNames.isEmpty()) {
+            return List.copyOf(dependencyNames);
+        }
+
+        var legacyEggInfoRequirements = metadataPath.resolve("requires.txt");
+        if (!Files.exists(legacyEggInfoRequirements)) {
+            return List.of();
+        }
+
+        try {
+            Files.readAllLines(legacyEggInfoRequirements, StandardCharsets.UTF_8).stream()
+                    .map(String::trim)
+                    .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                    .filter(line -> !(line.startsWith("[") && line.endsWith("]")))
+                    .map(PythonDistribution::parseRequirementName)
+                    .filter(name -> name != null && !name.isBlank())
+                    .forEach(dependencyNames::add);
+        } catch (IOException e) {
+            throw new PluginException("Unable to read Python dependency metadata from " + legacyEggInfoRequirements + ".", e);
+        }
+
+        return List.copyOf(dependencyNames);
+    }
+
+    private static String parseRequirementName(String requirement) {
+        var stripped = requirement.strip();
+        if (stripped.isEmpty()) {
+            return null;
+        }
+
+        var end = stripped.length();
+        for (var i = 0; i < stripped.length(); i++) {
+            var ch = stripped.charAt(i);
+            if (Character.isWhitespace(ch) || ch == '[' || ch == '(' || ch == ';') {
+                end = i;
+                break;
+            }
+        }
+
+        var name = stripped.substring(0, end).strip();
+        return name.isEmpty() ? null : normalizeDistributionName(name);
+    }
+
+    static String normalizeDistributionName(String value) {
         var normalized = value.strip().toLowerCase(Locale.ROOT).replaceAll("[-_.]+", "-");
         if (normalized.isBlank()) {
             throw new PluginException("Plugin names must not be blank.");
@@ -248,7 +303,8 @@ final class PythonDistribution {
             String version,
             String summary,
             List<String> authors,
-            String website
+            String website,
+            List<String> dependencyNames
     ) {
     }
 

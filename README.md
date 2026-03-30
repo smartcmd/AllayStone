@@ -30,7 +30,7 @@ For `./gradlew runServer`, the managed prefix is `build/run/plugins/.local`.
 
 Stop the server before removing a Python plugin.
 
-- Wheel install: delete the matching `.whl` file from `plugins/`. AllayStone will remove the installed files from `plugins/.local` on the next startup.
+- Wheel install: delete the matching `.whl` file from `plugins/`. AllayStone will remove that plugin and any now-unreferenced installed dependencies from `plugins/.local` on the next startup.
 - Editable install: uninstall from the managed prefix.
 
 ```powershell
@@ -69,6 +69,7 @@ Reloading does this:
 
 - Wheel plugins are reinstalled from `plugins/*.whl` before the new context is created.
 - Editable plugins are reloaded from the current source tree already linked into `plugins/.local`.
+- If reload fails after `on_disable()`, the plugin stays disabled until it is reloaded successfully or the server is restarted.
 - Metadata changes such as `name`, `version`, `api_version`, and dependencies still require a full restart.
 - Plugin cleanup is still the plugin author's responsibility. Unregister listeners, commands, and long-lived tasks in `on_disable()`.
 

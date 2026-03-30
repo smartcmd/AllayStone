@@ -1,3 +1,13 @@
+fun requireSubmodule(path: String) {
+    check(file(path).isDirectory) {
+        "Missing required submodule path `$path`. Run `git submodule update --init --recursive`."
+    }
+}
+
+requireSubmodule("external/Allay")
+requireSubmodule("external/graalpy-extensions/pyinterfacegen")
+requireSubmodule("external/graalpy-extensions/pyinterfacegen/gradle-plugin")
+
 pluginManagement {
     includeBuild("external/graalpy-extensions/pyinterfacegen/gradle-plugin")
     repositories {

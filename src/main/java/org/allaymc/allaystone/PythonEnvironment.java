@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -37,6 +38,7 @@ final class PythonEnvironment {
         this.sitePackageDirs = runtime.getSitePackageDirs(INSTALL_PREFIX).stream()
                 .map(Path::toAbsolutePath)
                 .map(Path::normalize)
+                .distinct()
                 .peek(this::ensureDirectory)
                 .toList();
     }
@@ -46,8 +48,8 @@ final class PythonEnvironment {
     }
 
     synchronized Set<Path> findInstalledPluginMetadata() {
-        cleanupRemovedWheelInstalls();
         installWheelPlugins();
+        pruneManagedDistributions();
         return refreshInstalledPlugins().keySet();
     }
 
@@ -83,6 +85,7 @@ final class PythonEnvironment {
             installWheel(source.path());
         }
 
+        pruneManagedDistributions();
         var refreshed = refreshInstalledPlugins().values().stream()
                 .filter(plugin -> plugin.entryPoint().name().equals(pluginName))
                 .findFirst()
@@ -91,16 +94,6 @@ final class PythonEnvironment {
             throw new PluginException("Unable to refresh Python plugin " + pluginName + ".");
         }
         return refreshed;
-    }
-
-    private void cleanupRemovedWheelInstalls() {
-        for (var plugin : scanInstalledPlugins().values()) {
-            var source = plugin.installationSource();
-            if (source == null || source.editable() || !isPluginWheel(source.path()) || Files.exists(source.path())) {
-                continue;
-            }
-            removeInstalledPlugin(plugin);
-        }
     }
 
     private void installWheelPlugins() {
@@ -138,6 +131,15 @@ final class PythonEnvironment {
         ));
     }
 
+    private void pruneManagedDistributions() {
+        var installedDistributions = scanInstalledDistributions();
+        var activePlugins = scanActivePlugins(installedDistributions);
+        var reachableDistributionNames = collectReachableDistributionNames(activePlugins, installedDistributions);
+        installedDistributions.values().stream()
+                .filter(distribution -> !reachableDistributionNames.contains(distribution.normalizedName()))
+                .forEach(this::removeInstalledDistribution);
+    }
+
     private Map<Path, InstalledPlugin> refreshInstalledPlugins() {
         var plugins = scanInstalledPlugins();
         installedPlugins = Map.copyOf(plugins);
@@ -146,8 +148,8 @@ final class PythonEnvironment {
         return installedPlugins;
     }
 
-    private Map<Path, InstalledPlugin> scanInstalledPlugins() {
-        var plugins = new LinkedHashMap<Path, InstalledPlugin>();
+    private Map<String, InstalledDistribution> scanInstalledDistributions() {
+        var distributions = new LinkedHashMap<String, InstalledDistribution>();
         for (var sitePackageDir : sitePackageDirs) {
             if (!Files.isDirectory(sitePackageDir)) {
                 continue;
@@ -155,42 +157,125 @@ final class PythonEnvironment {
 
             try (var stream = Files.list(sitePackageDir)) {
                 for (var candidate : stream.toList()) {
-                    var plugin = scanInstalledPlugin(candidate);
-                    if (plugin != null) {
-                        plugins.put(plugin.metadataPath(), plugin);
+                    var distribution = scanInstalledDistribution(candidate);
+                    if (distribution != null) {
+                        var existing = distributions.putIfAbsent(distribution.normalizedName(), distribution);
+                        if (existing != null && !existing.metadataPath().equals(distribution.metadataPath())) {
+                            throw new PluginException(
+                                    "Found multiple installed Python distributions named " +
+                                            distribution.normalizedName() +
+                                            ": " +
+                                            existing.metadataPath() +
+                                            " and " +
+                                            distribution.metadataPath() +
+                                            "."
+                            );
+                        }
                     }
                 }
             } catch (IOException e) {
                 throw new PluginException("Unable to inspect installed Python packages in " + sitePackageDir + ".", e);
             }
         }
+        return distributions;
+    }
+
+    private Map<Path, InstalledPlugin> scanInstalledPlugins() {
+        var plugins = new LinkedHashMap<Path, InstalledPlugin>();
+        for (var plugin : scanActivePlugins(scanInstalledDistributions()).values()) {
+            plugins.put(plugin.metadataPath(), plugin);
+        }
         return plugins;
     }
 
-    private InstalledPlugin scanInstalledPlugin(Path metadataPath) {
+    private Map<String, InstalledPlugin> scanActivePlugins(Map<String, InstalledDistribution> installedDistributions) {
+        var plugins = new LinkedHashMap<String, InstalledPlugin>();
+        for (var distribution : installedDistributions.values()) {
+            var plugin = scanInstalledPlugin(distribution);
+            if (plugin != null && shouldKeepPlugin(plugin)) {
+                plugins.putIfAbsent(plugin.entryPoint().name(), plugin);
+            }
+        }
+        return plugins;
+    }
+
+    private Set<String> collectReachableDistributionNames(
+            Map<String, InstalledPlugin> activePlugins,
+            Map<String, InstalledDistribution> installedDistributions
+    ) {
+        var pending = new ArrayDeque<String>();
+        activePlugins.values().stream()
+                .map(plugin -> PythonDistribution.normalizeDistributionName(plugin.distributionMetadata().distributionName()))
+                .forEach(pending::addLast);
+
+        var reachable = new java.util.LinkedHashSet<String>();
+        while (!pending.isEmpty()) {
+            var distributionName = pending.removeFirst();
+            if (!reachable.add(distributionName)) {
+                continue;
+            }
+
+            var distribution = installedDistributions.get(distributionName);
+            if (distribution == null) {
+                continue;
+            }
+
+            distribution.distributionMetadata().dependencyNames().stream()
+                    .filter(installedDistributions::containsKey)
+                    .forEach(pending::addLast);
+        }
+        return reachable;
+    }
+
+    private InstalledDistribution scanInstalledDistribution(Path metadataPath) {
         var normalizedPath = normalize(metadataPath);
         if (!PythonDistribution.isMetadataPath(normalizedPath)) {
             return null;
         }
 
         var distributionMetadata = PythonDistribution.readDistributionMetadata(normalizedPath);
-        var entryPoint = PythonDistribution.readEntryPoint(normalizedPath, distributionMetadata.distributionName());
+        return new InstalledDistribution(
+                normalizedPath,
+                PythonDistribution.normalizeDistributionName(distributionMetadata.distributionName()),
+                distributionMetadata,
+                PythonDistribution.readInstallationSource(normalizedPath)
+        );
+    }
+
+    private InstalledPlugin scanInstalledPlugin(Path metadataPath) {
+        return scanInstalledPlugin(scanInstalledDistribution(metadataPath));
+    }
+
+    private InstalledPlugin scanInstalledPlugin(InstalledDistribution distribution) {
+        if (distribution == null) {
+            return null;
+        }
+
+        var entryPoint = PythonDistribution.readEntryPoint(
+                distribution.metadataPath(),
+                distribution.distributionMetadata().distributionName()
+        );
         if (entryPoint == null) {
             return null;
         }
 
         return new InstalledPlugin(
-                normalizedPath,
-                distributionMetadata,
+                distribution.metadataPath(),
+                distribution.distributionMetadata(),
                 entryPoint,
-                PythonDistribution.readInstallationSource(normalizedPath)
+                distribution.installationSource()
         );
     }
 
-    private void removeInstalledPlugin(InstalledPlugin plugin) {
-        var recordPath = plugin.metadataPath().resolve("RECORD");
+    private boolean shouldKeepPlugin(InstalledPlugin plugin) {
+        var source = plugin.installationSource();
+        return source == null || source.editable() || !isPluginWheel(source.path()) || Files.exists(source.path());
+    }
+
+    private void removeInstalledDistribution(InstalledDistribution distribution) {
+        var recordPath = distribution.metadataPath().resolve("RECORD");
         if (!Files.exists(recordPath)) {
-            PythonRuntime.deleteRecursively(plugin.metadataPath());
+            PythonRuntime.deleteRecursively(distribution.metadataPath());
             return;
         }
 
@@ -198,18 +283,17 @@ final class PythonEnvironment {
         try {
             entries = Files.readAllLines(recordPath, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new PluginException("Unable to read RECORD for " + plugin.distributionMetadata().distributionName() + ".", e);
+            throw new PluginException("Unable to read RECORD for " + distribution.distributionMetadata().distributionName() + ".", e);
         }
 
-        var sitePackagesDir = plugin.metadataPath().getParent();
+        var sitePackagesDir = distribution.metadataPath().getParent();
         var directories = new ArrayList<Path>();
         for (var entry : entries) {
             if (entry.isBlank()) {
                 continue;
             }
 
-            var separator = entry.indexOf(',');
-            var relativePath = separator >= 0 ? entry.substring(0, separator) : entry;
+            var relativePath = parseRecordPath(entry);
             if (relativePath.isBlank()) {
                 continue;
             }
@@ -269,10 +353,51 @@ final class PythonEnvironment {
         }
     }
 
+    private static String parseRecordPath(String entry) {
+        if (entry.isEmpty()) {
+            return entry;
+        }
+        if (entry.charAt(0) != '"') {
+            var separator = entry.indexOf(',');
+            return separator >= 0 ? entry.substring(0, separator) : entry;
+        }
+
+        var path = new StringBuilder();
+        for (var i = 1; i < entry.length(); i++) {
+            var ch = entry.charAt(i);
+            if (ch != '"') {
+                path.append(ch);
+                continue;
+            }
+
+            if (i + 1 < entry.length() && entry.charAt(i + 1) == '"') {
+                path.append('"');
+                i++;
+                continue;
+            }
+
+            if (i + 1 == entry.length() || entry.charAt(i + 1) == ',') {
+                return path.toString();
+            }
+
+            throw new PluginException("Malformed RECORD entry: " + entry);
+        }
+
+        throw new PluginException("Malformed RECORD entry: " + entry);
+    }
+
     record InstalledPlugin(
             Path metadataPath,
             PythonDistribution.DistributionMetadata distributionMetadata,
             PythonDistribution.EntryPointSpec entryPoint,
+            PythonDistribution.InstallationSource installationSource
+    ) {
+    }
+
+    record InstalledDistribution(
+            Path metadataPath,
+            String normalizedName,
+            PythonDistribution.DistributionMetadata distributionMetadata,
             PythonDistribution.InstallationSource installationSource
     ) {
     }

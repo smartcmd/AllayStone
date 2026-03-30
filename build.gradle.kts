@@ -21,6 +21,7 @@ val allayApiVersion = "0.27.0"
 val graalVersion = "25.0.2"
 val lombokVersion = "1.18.34"
 val ruffVersion = "0.15.8"
+val semverVersion = "6.0.0"
 
 val execOperations = project.serviceOf<ExecOperations>()
 val delombok by configurations.creating
@@ -166,6 +167,7 @@ dependencies {
     implementation("org.graalvm.python:python-resources:$graalVersion")
     implementation("org.graalvm.truffle:truffle-runtime:$graalVersion")
 
+    compileOnly("org.semver4j:semver4j:$semverVersion")
     compileOnly("org.projectlombok:lombok:$lombokVersion")
     annotationProcessor("org.projectlombok:lombok:$lombokVersion")
     delombok("org.projectlombok:lombok:$lombokVersion")

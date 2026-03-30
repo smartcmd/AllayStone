@@ -76,7 +76,9 @@ final class PythonRuntime implements AutoCloseable {
     PythonRuntime(Path dataFolder) {
         try {
             var runtimeRoot = Files.createDirectories(dataFolder.resolve(".runtime"));
-            helperSourceRoot = Files.createDirectories(runtimeRoot.resolve("src"));
+            helperSourceRoot = runtimeRoot.resolve("src");
+            deleteRecursively(helperSourceRoot);
+            Files.createDirectories(helperSourceRoot);
             copyHelperPackage();
         } catch (IOException e) {
             throw new IllegalStateException("Unable to initialize GraalPy runtime directories.", e);
