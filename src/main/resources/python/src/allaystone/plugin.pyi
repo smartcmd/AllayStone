@@ -1,7 +1,7 @@
-from typing import Any, ClassVar, Optional, Sequence
-
 from allay.api.plugin.Plugin import Plugin as JavaPlugin
 from allay.api.server.Server import Server
+from typing import Any, ClassVar, Optional, Sequence
+
 
 class Plugin:
     version: ClassVar[Optional[str]]
@@ -19,5 +19,7 @@ class Plugin:
     java_plugin: JavaPlugin
 
     def on_load(self) -> None: ...
+
     def on_enable(self) -> None: ...
+
     def on_disable(self) -> None: ...
