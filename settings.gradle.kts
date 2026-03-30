@@ -7,6 +7,9 @@ fun requireSubmodule(path: String) {
 requireSubmodule("external/Allay")
 requireSubmodule("external/graalpy-extensions/pyinterfacegen")
 requireSubmodule("external/graalpy-extensions/pyinterfacegen/gradle-plugin")
+requireSubmodule("external/JOML")
+requireSubmodule("external/joml-primitives")
+requireSubmodule("external/nbt")
 
 pluginManagement {
     includeBuild("external/graalpy-extensions/pyinterfacegen/gradle-plugin")

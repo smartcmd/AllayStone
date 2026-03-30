@@ -15,18 +15,22 @@ plugins {
 
 group = "org.allaymc.allaystone"
 description = "A python plugin loader & runtime for AllayMC using GraalPython, inspired by Endstone"
-version = "0.1.5-SNAPSHOT"
+version = "0.1.5"
 
 val allayApiVersion = "0.27.0"
 val graalVersion = "25.0.2"
 val lombokVersion = "1.18.34"
 val ruffVersion = "0.15.8"
 val semverVersion = "6.0.0"
+val checkerFrameworkVersion = "3.51.1"
 
 val execOperations = project.serviceOf<ExecOperations>()
 val delombok by configurations.creating
 
 val allayApiSourceDir = layout.projectDirectory.dir("external/Allay/api/src/main/java")
+val jomlSourceDir = layout.projectDirectory.dir("external/JOML/src/main/java")
+val jomlPrimitivesSourceDir = layout.projectDirectory.dir("external/joml-primitives/src/main/java")
+val nbtSourceDir = layout.projectDirectory.dir("external/nbt/src/main/java")
 val pythonHelperSourceDir = layout.projectDirectory.dir("src/main/resources/python/src")
 
 val generatedResourcesDir = layout.buildDirectory.dir("generated/resources")
@@ -93,6 +97,49 @@ fun collectNestedClassNames(jars: Iterable<File>): Map<String, String> {
             }
         }
     return nestedClassNames
+}
+
+fun resolveSourceNestedClassBinaryName(canonicalName: String, sourceRoots: Iterable<File>): String? {
+    if ('$' in canonicalName) {
+        return canonicalName
+    }
+
+    val segments = canonicalName.split('.')
+    if (segments.size < 2) {
+        return null
+    }
+
+    for (topLevelIndex in (segments.lastIndex - 1) downTo 1) {
+        val topLevelName = segments[topLevelIndex]
+        if (topLevelName.firstOrNull()?.isUpperCase() != true) {
+            continue
+        }
+
+        val relativePath = buildString {
+            append(segments.subList(0, topLevelIndex).joinToString(File.separator))
+            append(File.separator)
+            append(topLevelName)
+            append(".java")
+        }
+        if (!sourceRoots.any { root -> root.resolve(relativePath).isFile }) {
+            continue
+        }
+
+        val suffix = segments.subList(topLevelIndex + 1, segments.size)
+        if (suffix.isEmpty()) {
+            return null
+        }
+
+        return buildString {
+            append(segments.subList(0, topLevelIndex + 1).joinToString("."))
+            suffix.forEach { nestedName ->
+                append('$')
+                append(nestedName)
+            }
+        }
+    }
+
+    return null
 }
 
 fun patchStubPackagePyproject(pyprojectFile: File) {
@@ -179,6 +226,7 @@ dependencies {
     implementation("org.graalvm.truffle:truffle-runtime:$graalVersion")
 
     compileOnly("org.semver4j:semver4j:$semverVersion")
+    compileOnly("org.checkerframework:checker-qual:$checkerFrameworkVersion")
     compileOnly("org.projectlombok:lombok:$lombokVersion")
     annotationProcessor("org.projectlombok:lombok:$lombokVersion")
     delombok("org.projectlombok:lombok:$lombokVersion")
@@ -194,6 +242,15 @@ val verifyAllaySubmodule = tasks.register("verifyAllaySubmodule") {
     doLast {
         require(allayApiSourceDir.asFile.isDirectory) {
             "Allay submodule is missing. Run `git submodule update --init --recursive`."
+        }
+        require(jomlSourceDir.asFile.isDirectory) {
+            "JOML submodule is missing. Run `git submodule update --init --recursive`."
+        }
+        require(jomlPrimitivesSourceDir.asFile.isDirectory) {
+            "joml-primitives submodule is missing. Run `git submodule update --init --recursive`."
+        }
+        require(nbtSourceDir.asFile.isDirectory) {
+            "nbt submodule is missing. Run `git submodule update --init --recursive`."
         }
     }
 }
@@ -227,12 +284,29 @@ val delombokAllayApi = tasks.register<JavaExec>("delombokAllayApi") {
 
 val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPythonStubs") {
     dependsOn(delombokAllayApi)
-    source = fileTree(allayApiDelombokedSourceDir) {
-        include("org/allaymc/api/**/*.java")
-    }
+    source = files(
+        fileTree(allayApiDelombokedSourceDir) {
+            include("org/allaymc/api/**/*.java")
+        },
+        fileTree(jomlSourceDir) {
+            include("org/joml/**/*.java")
+            exclude("org/joml/JvmciCode.java")
+            exclude("org/joml/experimental/**")
+        },
+        fileTree(jomlPrimitivesSourceDir) {
+            include("org/joml/primitives/**/*.java")
+        },
+        fileTree(nbtSourceDir) {
+            include("org/cloudburstmc/nbt/**/*.java")
+        }
+    ).asFileTree
     classpath = configurations.compileClasspath.get()
     setDestinationDir(allayApiStubModuleDir.get().asFile)
-    packageMap.set("org.allaymc.api=allay.api")
+    packageMap.set(
+        "org.allaymc.api=allay.api," +
+            "org.joml=joml," +
+            "org.cloudburstmc.nbt=cloudburst.nbt"
+    )
     moduleName.set("allay-api")
     moduleVersion.set(allayApiVersion)
 
@@ -244,10 +318,17 @@ val generateAllayApiPythonStubs = tasks.register<J2PyiTask>("generateAllayApiPyt
 
 val fixGeneratedAllayApiRuntimeStubs = tasks.register("fixGeneratedAllayApiRuntimeStubs") {
     val outputDir = allayApiRuntimeStubModuleDir.get().asFile
+    val sourceRoots = listOf(
+        allayApiDelombokedSourceDir.get().asFile,
+        jomlSourceDir.asFile,
+        jomlPrimitivesSourceDir.asFile,
+        nbtSourceDir.asFile
+    )
 
     dependsOn(generateAllayApiPythonStubs)
     inputs.dir(allayApiStubModuleDir)
     inputs.files(configurations.compileClasspath)
+    sourceRoots.forEach(inputs::dir)
     outputs.dir(allayApiRuntimeStubModuleDir)
 
     doLast {
@@ -258,13 +339,20 @@ val fixGeneratedAllayApiRuntimeStubs = tasks.register("fixGeneratedAllayApiRunti
         }
 
         val nestedClassNames = collectNestedClassNames(configurations.compileClasspath.get().files)
+        val javaTypePattern = Regex("""java\.type\("([^"]+)"\)""")
         fileTree(outputDir) {
             include("**/__init__.py")
         }.forEach { stubFile ->
             val original = stubFile.readText()
-            var updated = original
-            nestedClassNames.forEach { (canonicalName, binaryName) ->
-                updated = updated.replace("java.type(\"$canonicalName\")", "java.type(\"$binaryName\")")
+            val updated = javaTypePattern.replace(original) { match ->
+                val canonicalName = match.groupValues[1]
+                val binaryName = nestedClassNames[canonicalName]
+                    ?: resolveSourceNestedClassBinaryName(canonicalName, sourceRoots)
+                if (binaryName == null || binaryName == canonicalName) {
+                    match.value
+                } else {
+                    """java.type("$binaryName")"""
+                }
             }
             if (updated != original) {
                 stubFile.writeText(updated)
@@ -332,6 +420,8 @@ val syncGeneratedPythonStubs = tasks.register<Sync>("syncGeneratedPythonStubs") 
     dependsOn(formatGeneratedAllayApiPythonStubs)
     from(allayApiFormattedStubModuleDir) {
         include("allay/**")
+        include("joml/**")
+        include("cloudburst/**")
     }
     into(generatedPythonSourceDir)
 }
@@ -340,6 +430,8 @@ val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") 
     dependsOn(formatGeneratedAllayApiPythonStubs)
     from(allayApiFormattedStubModuleDir) {
         include("allay/**")
+        include("joml/**")
+        include("cloudburst/**")
         include("pyproject.toml")
     }
     from(pythonHelperSourceDir) {
@@ -355,6 +447,14 @@ val preparePythonStubPackage = tasks.register<Sync>("preparePythonStubPackage") 
             writeText("")
         }
         File(outputDir, "allaystone/py.typed").apply {
+            parentFile.mkdirs()
+            writeText("")
+        }
+        File(outputDir, "joml/py.typed").apply {
+            parentFile.mkdirs()
+            writeText("")
+        }
+        File(outputDir, "cloudburst/nbt/py.typed").apply {
             parentFile.mkdirs()
             writeText("")
         }

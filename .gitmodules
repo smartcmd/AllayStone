@@ -4,3 +4,12 @@
 [submodule "external/graalpy-extensions"]
 	path = external/graalpy-extensions
 	url = https://github.com/smartcmd/graalpy-extensions.git
+[submodule "external/JOML"]
+	path = external/JOML
+	url = https://github.com/JOML-CI/JOML.git
+[submodule "external/joml-primitives"]
+	path = external/joml-primitives
+	url = https://github.com/AllayMC/joml-primitives.git
+[submodule "external/nbt"]
+	path = external/nbt
+	url = https://github.com/AllayMC/nbt.git
